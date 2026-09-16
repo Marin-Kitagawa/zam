@@ -65,6 +65,9 @@ object TestMain:
     eq("json: round-trip visits",
       rt.get("entries").flatMap(_.arr.headOption).get.obj.toMap.get("t").map(_.arr.flatMap(_.asLongOpt)),
       Some(Vector(123L, 456L)))
+    eq("json: round-trip config alpha",
+      rt.get("config").flatMap(_.obj.toMap.get("alpha")).flatMap(_.asDoubleOpt),
+      Some(1.5))
 
   // --------------------------------------------------------------- matcher
 
@@ -203,6 +206,7 @@ object TestMain:
       eq("cli: bare existing dir -> add", (c1, o1), (0, ""))
       val (c2, _) = runCli("--data-dir", dataDir.toString, d2)
       eq("cli: add second dir", c2, 0)
+      eq("cli: two entries on disk", Store.load(dataDir).entryCount, 2)
       val (cq, oq) = runCli("--data-dir", dataDir.toString, "query")
       eq("cli: query exits 0", cq, 0)
       check("cli: query returns a known dir")(
@@ -217,6 +221,31 @@ object TestMain:
       val (ce, oe) = runCli("--data-dir", dataDir.toString, "explain", "--list")
       eq("cli: explain needs a query", ce, 2)
       eq("cli: explain error on stderr-independent", oe, "")
+
+      // bare run must print help and exit 0 (regression: help used to crash)
+      val (ch, oh) = runCli()
+      eq("cli: bare run prints help exits 0", ch, 0)
+      check("cli: bare run help has Usage")(oh.contains("Usage:"))
+
+      // --exclude entries are whitespace-trimmed (parity with the Ada port)
+      val excl = s"  ${Store.canonicalize(d1)}, ${Store.canonicalize(d2)}"
+      val (cx, ox) = runCli("--data-dir", dataDir.toString, "query", "-l", "-a", s"--exclude=$excl")
+      eq("cli: exclude trims and removes both", (cx, ox), (1, ""))
+
+      // import understands `cd` followed by a tab, not just a space
+      val impDir = dataDir.resolve("imp")
+      val histF = Files.createTempFile("zam-hist", ".txt")
+      try
+        Files.writeString(histF, s"# comment\ncd\t${Store.canonicalize(d1)}\ncd ${Store.canonicalize(d2)}\n")
+        val (ci, _) = runCli("--data-dir", impDir.toString, "import", histF.toString)
+        eq("cli: import handles cd-tab and cd-space", (ci, Store.load(impDir).entryCount), (0, 2))
+      finally Files.deleteIfExists(histF)
+
+      // export works on a data dir that does not exist yet (creates it)
+      val expDir = dataDir.resolve("exp")
+      val (cx2, _) = runCli("--data-dir", expDir.toString, "export")
+      eq("cli: export creates the data dir", (cx2, Files.isDirectory(expDir)), (0, true))
+      eq("cli: export writes a rank-ordered file", Files.isRegularFile(expDir.resolve("zam-export.txt")), true)
     finally deleteTree(dataDir)
 
   private def deleteTree(dir: java.nio.file.Path): Unit =

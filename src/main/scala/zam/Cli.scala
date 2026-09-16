@@ -146,7 +146,7 @@ object Cli:
     val interactive = flag(p, "i") || flag(p, "interactive")
     val listOnly = flag(p, "l") || flag(p, "list")
     val maxResults = p.flags.get("max-results").flatMap(_.toIntOption).getOrElse(-1)
-    val excludes = p.flags.get("exclude").toVector.flatMap(_.split(','))
+    val excludes = p.flags.get("exclude").toVector.flatMap(_.split(',')).map(_.trim).filter(_.nonEmpty)
     val terms = p.positionals.mkString(" ").trim
 
     if terms == "-" then
@@ -392,7 +392,7 @@ object Cli:
           lines.forEach { raw =>
             var line = raw.trim
             if line.nonEmpty && !line.startsWith("#") then
-              if line.startsWith("cd ") then line = line.drop(3).trim
+              if line.startsWith("cd ") || line.startsWith("cd\t") then line = line.drop(3).trim
               val bang = line.indexOf("&&")
               if bang >= 0 then line = line.take(bang).trim
               val semi = line.indexOf(';')
@@ -410,6 +410,7 @@ object Cli:
   private def cmdExport(dir: Path, args: Vector[String]): Int =
     val p = divide(args)
     val name = p.positionals.headOption.getOrElse("zam-export.txt")
+    Files.createDirectories(dir)
     val target = dir.resolve(name)
     val db = Store.load(dir)
     val now = nowEpoch
