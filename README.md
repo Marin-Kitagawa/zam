@@ -39,7 +39,7 @@ zam stores the actual visit timestamps and scores them with a continuous
 power-law aging kernel:
 
 $$
-\mathrm{frecency}(path) = \sum_{i \,\in\, visits} \left( 1 + \frac{age_i}{\tau} \right)^{-\alpha}
+\mathrm{frecency}(\text{path}) = \sum_{i \in \text{visits}} \left( 1 + \frac{\text{age}_i}{\tau} \right)^{-\alpha}
 $$
 
 with $\tau = 1$ day and $\alpha = 1$ by default. A visit contributes ~1 to
