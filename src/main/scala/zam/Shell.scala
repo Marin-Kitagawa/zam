@@ -70,13 +70,16 @@ object Shell:
       |  }
       |
       |  # zoxide-compatible jump:
-      |  #   z              list remembered dirs
+      |  #   z              cd to your home directory (~)
+      |  #   z -l           list remembered dirs
       |  #   z -            back to previous dir
       |  #   z <existing>   cd straight into it (and it will be recorded by
       |  #                  __zamHook on the next prompt)
       |  #   z <query>      cd to the best match
       |  function global:z {
       |    if ($args.Count -eq 0) {
+      |      Set-Location -LiteralPath $HOME
+      |    } elseif ($args[0] -eq '-l' -or $args[0] -eq '--list') {
       |      & $global:ZAM_CMD query --list
       |    } elseif ($args[0] -eq '-') {
       |      if ($global:ZAM_PREV -and (Test-Path -LiteralPath $global:ZAM_PREV)) {

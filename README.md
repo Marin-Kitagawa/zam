@@ -112,8 +112,8 @@ and identical.
 
 ```console
 zam add C:\Users\Ahri\Documents          # record a visit (existing dirs only)
-zam docu                                 # jump to the best match for "docu"
-zam                                      # list remembered dirs, best first
+zam docu                                 # print the best match for "docu"
+zam list                                 # list remembered dirs, best first
 zam explain docu                         # why does each match rank where it does
 ```
 
@@ -363,7 +363,8 @@ your profile is untouched.
 - A `z` function, so `z` resolves to PowerShell (functions beat external
   commands), not to the batch launcher:
 
-  - `z` — list remembered directories
+  - `z` — `cd` to your home directory (`~`)
+  - `z -l` (or `z --list`) — list remembered directories
   - `z -` — return to the previous directory
   - `z <existing dir>` — `cd` straight into it (and it is recorded by the
     per-prompt hook)
