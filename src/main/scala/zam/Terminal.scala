@@ -40,7 +40,7 @@ object Terminal:
   val Accent  = fg256(81)   // soft cyan
   val Warning = fg256(214)  // amber
   val Danger  = fg256(203)  // coral red
-  val DimGray = fg256(243)  // muted text
+  val DimGray = fg256(250)  // muted text (≥4.5:1 on dark defaults)
   val SelBg   = bg256(237)  // selected-row backdrop
   val TrackBg = bg256(235)  // scrollbar track
   val ThumbFg = fg256(245)  // scrollbar thumb

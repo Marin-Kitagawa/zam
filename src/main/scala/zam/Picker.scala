@@ -159,15 +159,17 @@ object Picker:
     val marker = if selected then Terminal.Bold + Terminal.Accent + "▸ " else "  "
     val idStr = padLeft((i + 1).toString, 3)
 
-    val base = if selected then Terminal.SelBg + Terminal.FgBright else Terminal.FgDefault
-    val hi = if selected then Terminal.SelBg + Terminal.Bold + Terminal.Underline + Terminal.Accent
-             else Terminal.Bold + Terminal.Underline + Terminal.Accent
+    val base = if selected then Terminal.SelBg + Terminal.FgWhite else Terminal.FgDefault
+    val hi = Terminal.Bold + Terminal.Underline + Terminal.Accent
 
     val pathW = math.max(4, s.cols - 17)
     val visible = truncate(it.path, pathW)
 
-    sb.append(Terminal.Reset).append(base).append(" ").append(marker)
-    sb.append(if selected then Terminal.FgBright else Terminal.DimGray).append(idStr)
+    sb.append(Terminal.Reset).append(base)
+    sb.append(" ").append(marker)
+    sb.append(Terminal.Reset).append(base)
+    if selected then sb.append(idStr)
+    else sb.append(Terminal.DimGray).append(idStr)
     sb.append(base).append(" ")
 
     // path with highlight spans (kept inside the active row style)
@@ -180,7 +182,8 @@ object Picker:
         k += 1
 
     sb.append(base).append(" ")
-    sb.append(Terminal.DimGray).append(fmtScore(it.score))
+    if selected then sb.append(fmtScore(it.score))
+    else sb.append(Terminal.DimGray).append(fmtScore(it.score))
 
   private def footer(s: State, sb: StringBuilder): Unit =
     sb.append(Terminal.DimGray)
@@ -190,6 +193,7 @@ object Picker:
     sb.append(Terminal.Accent).append("ctrl-r").append(Terminal.DimGray)
     if s.mode == Mode.Regex then sb.append(" regex on") else sb.append(" regex")
     if isIdQuery(s.query) then sb.append("  ").append(Terminal.Warning).append("selecting by id")
+    else sb.append("  ").append(Terminal.Accent).append("digits").append(Terminal.DimGray).append(" jump  ")
 
   private def finalizeLine(sb: StringBuilder, cols: Int, visible: Int): Unit =
     if visible < cols then sb.append(" " * (cols - visible))
@@ -222,8 +226,10 @@ object Picker:
 
     if s.view.isEmpty then
       val msg =
-        if s.query.nonEmpty && !isValidRegex(s.query) && s.mode == Mode.Regex then "invalid regex — esc to cancel"
-        else if s.query.nonEmpty then "no matches — esc to cancel"
+        if s.mode == Mode.Regex && !isValidRegex(s.query) then
+          s"bad regex '${s.query}' — ctrl-r to switch back · esc to cancel"
+        else if s.query.nonEmpty then
+          s""""${s.query}" found nothing — try fewer terms · esc to cancel"""
         else "nothing to show"
       sb.append(Terminal.DimGray).append("  ").append(msg)
       finalizeLine(sb, cols, 2 + msg.length)
