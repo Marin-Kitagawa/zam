@@ -28,6 +28,7 @@ object TestMain:
     scoreTests()
     storeTests()
     cliTests()
+    pickerTests()
     println("")
     println(s"$total checks, $failed failed")
     sys.exit(if failed == 0 then 0 else 1)
@@ -247,6 +248,69 @@ object TestMain:
       eq("cli: export creates the data dir", (cx2, Files.isDirectory(expDir)), (0, true))
       eq("cli: export writes a rank-ordered file", Files.isRegularFile(expDir.resolve("zam-export.txt")), true)
     finally deleteTree(dataDir)
+
+  // ---------------------------------------------------------------- picker
+
+  def pickerTests(): Unit =
+    import Picker.{Action, Item, Mode, State}
+    import Terminal.Key
+
+    val items = Vector(
+      Item("/foo/bar", 10.0),
+      Item("/foo/baz", 50.0),
+      Item("/qux/quux", 5.0),
+      Item("/c:/users/ahri/demo", 1.0)
+    )
+    def st(query: String, mode: Mode = Mode.Fuzzy): State =
+      State(items, Vector.empty, Map.empty, query, 0, 0, mode, 100, 24)
+
+    eq("picker: empty query shows all in input order",
+      Picker.recompute(st("")).view, items)
+
+    eq("picker: fuzzy filters and keeps order",
+      Picker.recompute(st("foo ba")).view.map(_.path),
+      Vector("/foo/bar", "/foo/baz"))
+    eq("picker: fuzzy does not blur irrelevant terms",
+      Picker.recompute(st("foo qux")).view.isEmpty, true)
+    check("picker: fuzzy records highlight offsets")(
+      Picker.recompute(st("foo ba")).highlight.values.flatten.nonEmpty
+    )
+
+    val idv = Picker.recompute(st("3"))
+    eq("picker: id query shows full list", idv.view, items)
+    eq("picker: id query jumps to 3rd row", idv.cursor, 2)
+    eq("picker: id 0 clamps to first row", Picker.recompute(st("0")).cursor, 0)
+    eq("picker: oversized id clamps to last row", Picker.recompute(st("999")).cursor, items.size - 1)
+    eq("picker: mixed digits stay a search", Picker.recompute(st("1a")).view.isEmpty, true)
+
+    eq("picker: regex matches exactly",
+      Picker.recompute(st("b..", Mode.Regex)).view.map(_.path),
+      Vector("/foo/bar", "/foo/baz"))
+    eq("picker: regex invalid collects nothing", Picker.recompute(st("*", Mode.Regex)).view.isEmpty, true)
+    eq("picker: regex non-matching collects nothing", Picker.recompute(st("zzz", Mode.Regex)).view.isEmpty, true)
+
+    val (sr, _) = Picker.update(st(""), Key.CtrlR)
+    eq("picker: ctrl-r toggles regex mode", sr.mode, Mode.Regex)
+    val (su, _) = Picker.update(st("foo bar baz"), Key.CtrlU)
+    eq("picker: ctrl-u clears query", su.query, "")
+    val (sw, _) = Picker.update(st("foo bar baz  "), Key.CtrlW)
+    eq("picker: ctrl-w drops last word", sw.query, "foo bar")
+    val (sws, _) = Picker.update(st("onlyword"), Key.CtrlW)
+    eq("picker: ctrl-w on single word clears", sws.query, "")
+
+    val (sCh, act) = Picker.update(Picker.recompute(st("3")), Key.Enter)
+    eq("picker: enter chooses the id row", act, Action.Choose("/qux/quux"))
+    eq("picker: enter keeps non-empty state", sCh.view.nonEmpty, true)
+    val (_, actCancel) = Picker.update(st(""), Key.Escape)
+    eq("picker: escape cancels", actCancel, Action.Cancel)
+    val (_, actCtrlC) = Picker.update(st(""), Key.CtrlC)
+    eq("picker: ctrl-c cancels", actCtrlC, Action.Cancel)
+    val (_, actEmpty) = Picker.update(st("zzz nope"), Key.Enter)
+    eq("picker: enter on empty view cancels", actEmpty, Action.Cancel)
+
+    // end of list navigations clamp the cursor, not hard-fail
+    val (sd, _) = Picker.update(Picker.recompute(st("")).copy(cursor = Int.MaxValue), Key.Down)
+    check("picker: down past bottom clamps cursor")(sd.cursor <= items.size - 1)
 
   private def deleteTree(dir: java.nio.file.Path): Unit =
     if Files.exists(dir) then

@@ -80,7 +80,9 @@ Other differences from zoxide:
 Requirements: JDK 17+ and an sbt launcher, or any JDK plus sbt installed via
 coursier.
 
-1. Clone or copy the repository, then build the single runnable jar:
+1. Clone or copy the repository, then build the single runnable jar. The
+   interactive picker needs the JNA bridge libraries, which sbt's assembly
+   task fetches and bundles automatically (no extra install step):
 
    ```console
    sbt assembly
@@ -165,13 +167,38 @@ zam query foo bar          # both terms must appear, in order
 zam query -l               # list top matches, one path per line
 zam query -s               # like -l, but with scores
 zam query -a               # include directories that no longer exist
-zam query -i               # interactive picker via fzf (falls back to a ranked list)
+zam query -i               # interactive picker (built-in TUI) — or --interactive
 zam query --max-results=5  # cap the result set
 zam query --exclude=a,b    # skip paths containing these components
 ```
 
 Exit status is 0 on a match, 1 otherwise. The PowerShell `z` function relies
 on this to decide whether to `cd`.
+
+#### Interactive picker (`-i`)
+
+`zam query -i` opens a self-contained full-screen picker (no external
+dependencies — same spirit as fzf, but built in). It shows the ranked list
+with score and a scrollbar; on Windows it drives the console directly via
+JNA, on Unix via `/dev/tty`.
+
+```text
+▸ #1    /home/you/work/zam-cli        9.721
+  #2    /home/you/projects/zig        3.114
+  #3    /home/you/Downloads           0.902
+  …
+```
+
+- **Type to filter** — the fuzzy `zoxide` matcher (same semantics as
+  `zam query foo bar`). Type **digits only** to select a row directly by its
+  `#N` id; the cursor jumps to that row and `Enter` chooses it.
+- **`Ctrl-R`** — toggle regex mode; the query becomes a real (case-insensitive)
+  regular expression, and matched runs are highlighted.
+- **`Ctrl-W`** — delete the last word, **`Ctrl-U`** — clear the query,
+  **`↑/↓/Home/End/PgUp/PgDn`** — move the cursor.
+- **`Enter`** — choose the current row; **`Esc`** or **`Ctrl-C`** — cancel.
+- If the terminal is too small (< 40 cols or < 10 rows) the picker skips
+  itself and prints the ranked list instead, so scripts never hang.
 
 ### list
 
@@ -400,18 +427,20 @@ Build and test:
 
 ```console
 sbt compile                      # compile
-sbt "Test / runMain zam.TestMain"  # dependency-free test runner (52 checks)
+sbt "Test / runMain zam.TestMain"  # dependency-free test runner (85 checks)
 ```
 
 Source layout (`.scala` files under `src/main/scala/zam/`):
 
 | Component       | File             | Purpose                                                                |
 |-----------------|------------------|------------------------------------------------------------------------|
-| `Model` / `Score` | `Model.scala`   | Entry/DB types, power-law frecency, zoxide-model comparison, human ages. |
+| `Model` / `Score` | `Model.scala` | Entry/DB types, power-law frecency, zoxide-model comparison, human ages. |
 | `Matcher`       | `Matcher.scala` | zoxide-faithful fuzzy matching (case-fold, ordered terms, last-component). |
 | `Store`         | `Store.scala`   | JSON persistence, file locking, atomic writes, cap/prune/remove logic.  |
 | `Cli`           | `Cli.scala`     | Argument parsing and all subcommands, including the bare-invocation logic. |
-| `Shell`         | `Shell.scala`   | fzf picker and the PowerShell integration snippet.                     |
+| `Picker`        | `Picker.scala`  | Built-in interactive picker: fuzzy / regex / id modes, scrolling TUI.   |
+| `Terminal`      | `Terminal.scala`| Raw console I/O via JNA (Windows) and /dev/tty+stty (Unix); ANSI/VT keys. |
+| `Shell`         | `Shell.scala`   | The PowerShell integration snippet (records dirs, defines `z`).        |
 | `Json`          | `Json.scala`    | Dependency-free JSON reader/writer.                                    |
 
 The scoring code has no external dependencies — it is pure Scala — so it
