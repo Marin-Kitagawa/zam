@@ -167,7 +167,7 @@ zam query foo bar          # both terms must appear, in order
 zam query -l               # list top matches, one path per line
 zam query -s               # like -l, but with scores
 zam query -a               # include directories that no longer exist
-zam query -i               # interactive picker (built-in TUI)
+zam query -i               # interactive picker (built-in TUI) — or --interactive
 zam query --max-results=5  # cap the result set
 zam query --exclude=a,b    # skip paths containing these components
 ```

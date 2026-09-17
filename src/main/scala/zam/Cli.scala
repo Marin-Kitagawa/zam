@@ -94,7 +94,7 @@ object Cli:
                |  add <path>...      record visits      (--no-verify: skip existence check)
 |  query [<query>]    print best match   (-l/-s/-a, --max-results=N,
       |                                        --exclude=PATH[,PATH])
-      |  query -i         interactive picker: fuzzy search, regex (ctrl-r),
+      |  query -i | --interactive   interactive picker: fuzzy search, regex (ctrl-r),
       |                    or select by id (type a number)
                |  list               list remembered dirs, best first
                |  remove <path>...   forget paths
