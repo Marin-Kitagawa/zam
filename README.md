@@ -6,7 +6,7 @@ keeps your **full visit history** and scores it, instead of collapsing each
 directory to `(visit count, last access)`.
 
 ```console
-zam docu        -> cd C:\Users\Ahri\Documents
+zam docu        -> cd C:\Users\you\Documents
 zam sys         -> cd C:\Windows\System32
 ```
 
@@ -113,7 +113,7 @@ and identical.
 ## Quick start
 
 ```console
-zam add C:\Users\Ahri\Documents          # record a visit (existing dirs only)
+zam add C:\Users\you\Documents          # record a visit (existing dirs only)
 zam docu                                 # print the best match for "docu"
 zam list                                 # list remembered dirs, best first
 zam explain docu                         # why does each match rank where it does
@@ -337,7 +337,7 @@ Example:
   },
   "entries": [
     {
-      "p": "C:\\Users\\Ahri\\Documents",
+      "p": "C:\\Users\\you\\Documents",
       "t": [1710000000, 1710100000, 1710200000]
     }
   ]
@@ -374,7 +374,7 @@ in place:
 
 ```powershell
 Copy-Item $PROFILE "$PROFILE.bak"                        # safety backup
-$snip = & 'C:\Users\Ahri\Documents\Default Project\zam\bin\z.cmd' shell
+$snip = & 'C:\Users\you\zam\bin\z.cmd' shell
 $raw  = Get-Content $PROFILE -Raw
 $raw  = [regex]::Replace($raw, '(?s)# --- zam shell integration ---.*?# --- end zam shell integration ---\r?\n?', '')
 $new  = $raw.TrimEnd() + "`r`n`r`n" + ($snip -join "`r`n") + "`r`n"

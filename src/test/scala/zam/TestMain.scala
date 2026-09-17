@@ -84,7 +84,7 @@ object TestMain:
     check("wiki: z foo/bar !-> /foo/bar/baz")(!m("/foo/bar/baz", "foo/bar"))
     check("matching is case-insensitive")(m("/USERS/Foo/bAr", "foo baR"))
     check("no match")(!m("/foo/bar", "qux"))
-    check("windows separators")(m("C:\\Users\\Ahri\\projects\\demo", "ahri demo"))
+    check("windows separators")(m("C:\\Users\\you\\projects\\demo", "you demo"))
     check("multiple terms in order")(m("/home/usr/projects/release", "proj rel"))
     check("terms out of order rejected")(!m("/home/usr/projects/release", "rel proj"))
 
