@@ -92,8 +92,10 @@ object Cli:
                |
                |Commands:
                |  add <path>...      record visits      (--no-verify: skip existence check)
-               |  query [<query>]    print best match   (-l/-s/-a/-i, --max-results=N,
-               |                                        --exclude=PATH[,PATH])
+|  query [<query>]    print best match   (-l/-s/-a, --max-results=N,
+      |                                        --exclude=PATH[,PATH])
+      |  query -i         interactive picker: fuzzy search, regex (ctrl-r),
+      |                    or select by id (type a number)
                |  list               list remembered dirs, best first
                |  remove <path>...   forget paths
                |  prune              forget gone dirs last seen --max-age=DAYS ago (default 90);
@@ -171,11 +173,15 @@ object Cli:
       val limited = if maxResults > 0 then ranked.take(maxResults) else ranked
 
       if interactive then
-        Shell.pick(limited.map(_._1.path)) match
-          case Some(chosen) =>
-            println(chosen)
+        Picker.run(limited.map { case (e, s) => Picker.Item(e.path, s) }) match
+          case Picker.Result.Chosen(path) =>
+            println(path)
             0
-          case None =>
+          case Picker.Result.Cancelled =>
+            if limited.isEmpty then errln("zam: no match")
+            else errln("zam: cancelled")
+            1
+          case Picker.Result.Unavailable =>
             limited.foreach { (e, s) => println(f"${s}%.3f\t${e.path}") }
             if limited.isEmpty then
               errln("zam: no match")

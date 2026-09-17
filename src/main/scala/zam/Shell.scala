@@ -1,47 +1,8 @@
 package zam
 
-import java.nio.file.{Files, Paths}
-
-/** Shell integration pieces: interactive picker and PowerShell profile hook. */
+/** Shell integration: the PowerShell profile hook and `z` function. */
 object Shell:
 
-  def fzfOnPath: Boolean =
-    val path = sys.env.getOrElse("PATH", "")
-    val exts = if Store.isWindows then Seq("", ".exe", ".bat", ".cmd") else Seq("")
-    path.split(java.io.File.pathSeparator).exists { d =>
-      if d.isEmpty then false
-      else
-        val dir = Paths.get(d)
-        exts.exists(ext => Files.isRegularFile(dir.resolve("fzf" + ext)))
-    }
-
-  /** Feed candidates to fzf; returns the selected path, or None (fall back to
-    * printing the ranked list). */
-  def pick(candidates: Vector[String]): Option[String] =
-    if candidates.isEmpty || !fzfOnPath then None
-    else
-      try
-        val pb = new ProcessBuilder("fzf", "--height=40%", "--reverse", "--border")
-        pb.redirectInput(ProcessBuilder.Redirect.PIPE)
-        pb.redirectOutput(ProcessBuilder.Redirect.PIPE)
-        pb.redirectError(ProcessBuilder.Redirect.INHERIT)
-        val proc = pb.start()
-        val writer = new java.io.BufferedWriter(new java.io.OutputStreamWriter(proc.getOutputStream, java.nio.charset.StandardCharsets.UTF_8))
-        candidates.foreach { c =>
-          writer.write(c); writer.newLine()
-        }
-        writer.close()
-        val out = new String(proc.getInputStream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim
-        if proc.waitFor() == 0 && out.nonEmpty then Some(out) else None
-      catch case _: Exception => None
-
-  /** PowerShell integration: a per-prompt hook that records directory changes
-    * plus a `z` function. Save this output to your `$PROFILE`.
-    *
-    * The launcher is discovered by name (`z.cmd`, `zam.cmd`, or `zam`) so this
-    * works regardless of what you renamed the wrapper to. Note that the actual
-    * directory change MUST happen here in PowerShell — a .cmd/.bat child
-    * process can never change the parent shell's working directory. */
   def powershellSnippet: String =
     """# --- zam shell integration (paste into $PROFILE) ---
       |$global:ZAM_CMD = $null
@@ -72,6 +33,7 @@ object Shell:
       |  # zoxide-compatible jump:
       |  #   z              cd to your home directory (~)
       |  #   z -l           list remembered dirs
+      |  #   z -i           open the interactive picker (fuzzy / regex / id)
       |  #   z -            back to previous dir
       |  #   z <existing>   cd straight into it (and it will be recorded by
       |  #                  __zamHook on the next prompt)
