@@ -37,13 +37,25 @@ object Terminal:
   private def fg256(n: Int): String = esc + s"[38;5;${n}m"
   private def bg256(n: Int): String = esc + s"[48;5;${n}m"
 
-  val Accent  = fg256(81)   // soft cyan
-  val Warning = fg256(214)  // amber
-  val Danger  = fg256(203)  // coral red
-  val DimGray = fg256(250)  // muted text (≥4.5:1 on dark defaults)
-  val SelBg   = bg256(237)  // selected-row backdrop
-  val TrackBg = bg256(235)  // scrollbar track
-  val ThumbFg = fg256(245)  // scrollbar thumb
+  // ── the cozy pastel palette ───────────────────────────────────────────────
+  // A soft sakura / strawberry-milk scheme: pinks and lavenders for accents,
+  // peach and cream for warm details, dusty mauve for anything that should
+  // quietly recede.
+  val Accent      = fg256(218)  // sakura pink — the primary accent
+  val AccentStrong = fg256(213) // bright orchid — prompt, hearts, markers
+  val Lavender    = fg256(183)  // soft lavender — secondary accent (regex)
+  val Peach       = fg256(223)  // warm peach — scores
+  val Cream       = fg256(224)  // pale rose-cream — selected / typed text
+  val Warning     = fg256(217)  // soft coral — id badge, gentle attention
+  val Danger      = fg256(210)  // strawberry — errors
+  val DimGray     = fg256(139)  // dusty mauve — muted-but-readable text
+  val Rule        = fg256(131)  // quiet dusty rose — separators
+  val SelBg       = bg256(53)   // deep plum — selected-row backdrop
+  val TrackBg     = bg256(53)   // scrollbar track backdrop
+  val ThumbFg     = fg256(218)  // pink scrollbar thumb
+  val ScrollTrack = fg256(95)   // very muted mauve — scrollbar track glyph
+  val CursorBg    = bg256(218)  // the little pink block cursor
+  val CursorFg    = fg256(53)
 
   val ClearLine    = esc + "[2K"
   val ClearScreen  = esc + "[2J"
@@ -60,6 +72,20 @@ object Terminal:
   private var savedUnix: String = null
   private var savedWinIn = 0
   private var savedWinOut = 0
+
+  /** True when a human can type to this process: the standard input is an
+    * interactive terminal. The picker must not start otherwise — with piped
+    * stdin the CONIN$ read blocks forever even though a console exists. */
+  def stdinIsInteractive(): Boolean =
+    if isWindows then WideConsole.isStdinConsole()
+    else
+      try
+        val pb = new ProcessBuilder("sh", "-c", "[ -t 0 ] && exit 0 || exit 1")
+        pb.redirectInput(ProcessBuilder.Redirect.INHERIT)
+        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        pb.redirectError(ProcessBuilder.Redirect.DISCARD)
+        pb.start().waitFor() == 0
+      catch case _: Throwable => false
 
   def enterRaw(): Boolean =
     if active then return true
@@ -126,7 +152,11 @@ object Terminal:
         else
           savedWinIn = c.queryInMode()
           savedWinOut = c.queryOutMode()
-          val rawIn = (savedWinIn & ~(1 | 2 | 4 | 16)) | 0x0200
+          val rawIn = (savedWinIn & ~(1 | 2 | 4 | 16) // drop processed/line/echo/mouse
+            & ~(0x0040 | 0x0020) // drop quick-edit + insert: a stray mouse drag
+                                 // must not freeze the picker mid-read
+            | 0x0080) // ENABLE_EXTENDED_FLAGS, required to apply the above
+            | 0x0200 // ENABLE_VIRTUAL_TERMINAL_INPUT
           val rawOut = savedWinOut | 0x0004
           c.setInMode(rawIn) && c.setOutMode(rawOut)
       case None => false
@@ -141,14 +171,48 @@ object Terminal:
   def rawStdin: InputStream = in
   def rawStdout: OutputStream = out
 
-  /** Blocking read of a single byte from the console. */
-  def readByte(): Int =
+  // Console bytes are pulled by one dedicated daemon thread into a queue, so
+  // reads can block forever (waiting for a key) or time out (lone ESC) without
+  // ever racing a second ReadFile against the same console handle.
+  @volatile private var eof = false
+  private lazy val keyQueue: java.util.concurrent.BlockingQueue[Integer] =
+    val q = new java.util.concurrent.LinkedBlockingQueue[Integer]()
+    val t = new Thread(() =>
+      var go = true
+      while go do
+        val b = readByteRaw()
+        q.put(b)
+        if b == -1 then
+          eof = true
+          go = false
+    , "zam-console-reader")
+    t.setDaemon(true)
+    t.start()
+    q
+
+  private def readByteRaw(): Int =
     if isWindows then
       win match
         case Some(c) => c.readByte()
-        case None => -1
+        case None    => -1
     else if in != null then in.read()
     else -1
+
+  /** Blocking read of a single byte from the console. */
+  def readByte(): Int =
+    if eof && keyQueue.isEmpty then return -1
+    try keyQueue.take().intValue
+    catch case _: Throwable => -1
+
+  /** Read a single byte if it arrives within `timeoutMs`; -1 on timeout. Used
+    * after ESC so a lone Escape is not mistaken for the start of a VT
+    * sequence — and does not block until the next keypress. */
+  def readByteTimeout(timeoutMs: Long): Int =
+    try
+      keyQueue.poll(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) match
+        case null => -1
+        case v    => v.intValue
+    catch case _: Throwable => -1
 
   def write(s: String): Unit =
     val bytes = s.getBytes(StandardCharsets.UTF_8)
@@ -181,10 +245,15 @@ object Terminal:
     case object Backspace extends Key
     case object Delete extends Key
     case object Tab extends Key
+    case object CtrlC extends Key
+    case object CtrlD extends Key
+    case object CtrlJ extends Key
+    case object CtrlK extends Key
+    case object CtrlN extends Key
+    case object CtrlP extends Key
     case object CtrlR extends Key
     case object CtrlU extends Key
     case object CtrlW extends Key
-    case object CtrlC extends Key
     case class Ch(c: scala.Char) extends Key
     case object Unknown extends Key
 
@@ -192,12 +261,12 @@ object Terminal:
     val b = readByte()
     b match
       case -1 => Key.Unknown
-      case 27 => // ESC: lone key or a CSI/SS3 sequence
-        val next = readByte()
+      case 27 => // ESC: lone key or a CSI/SS3 sequence — wait briefly so a
+                 // lone Escape press does not swallow the next keystroke
+        val next = readByteTimeout(40)
         if next == -1 then Key.Escape
         else if next == '[' then readCsi()
         else if next == 'O' then readSs3()
-        else if next == 27 then Key.Escape
         else Key.Unknown
       case 13 | 10 => Key.Enter
       case 8 | 127 => Key.Backspace
@@ -205,6 +274,11 @@ object Terminal:
       case b if b >= 1 && b <= 26 =>
         (b + 96).toChar match
           case 'c' => Key.CtrlC
+          case 'd' => Key.CtrlD
+          case 'j' => Key.CtrlJ
+          case 'k' => Key.CtrlK
+          case 'n' => Key.CtrlN
+          case 'p' => Key.CtrlP
           case 'r' => Key.CtrlR
           case 'u' => Key.CtrlU
           case 'w' => Key.CtrlW
@@ -322,9 +396,13 @@ private class WindowsConsole:
     catch case _: Throwable => -1
 
   def write(bytes: Array[Byte]): Unit =
-    val n = new IntByReference()
-    try k32.WriteFile(hOut, bytes, bytes.length, n, null)
-    catch case _: Throwable => ()
+    val text = new String(bytes, StandardCharsets.UTF_8)
+    // UTF-16 via WriteConsoleW: box drawing, accents and CJK render correctly
+    // regardless of the console's active code page
+    if !WideConsole.writeW(hOut, text) then
+      val n = new IntByReference()
+      try k32.WriteFile(hOut, bytes, bytes.length, n, null)
+      catch case _: Throwable => ()
 
   def size(): (Int, Int) =
     val info = new Wincon.CONSOLE_SCREEN_BUFFER_INFO()

@@ -83,8 +83,10 @@ object Picker:
           (s, Action.Choose(s.view(cursor).path))
         else (s, Action.Cancel)
       case Terminal.Key.Escape | Terminal.Key.CtrlC => (s, Action.Cancel)
-      case Terminal.Key.Up => (recompute(s.copy(cursor = cursor - 1)), Action.Continue)
-      case Terminal.Key.Down => (recompute(s.copy(cursor = cursor + 1)), Action.Continue)
+      case Terminal.Key.Up | Terminal.Key.CtrlP | Terminal.Key.CtrlK =>
+        (recompute(s.copy(cursor = cursor - 1)), Action.Continue)
+      case Terminal.Key.Down | Terminal.Key.CtrlN | Terminal.Key.CtrlJ =>
+        (recompute(s.copy(cursor = cursor + 1)), Action.Continue)
       case Terminal.Key.Home => (recompute(s.copy(cursor = 0)), Action.Continue)
       case Terminal.Key.End => (recompute(s.copy(cursor = Int.MaxValue)), Action.Continue)
       case Terminal.Key.PageUp => (recompute(s.copy(cursor = cursor - itemRows(s))), Action.Continue)
@@ -128,39 +130,43 @@ object Picker:
         if i >= thumbPos && i < thumbPos + thumbLen then
           Terminal.ThumbFg + "▓▓"
         else
-          Terminal.DimGray + "░░"
+          Terminal.ScrollTrack + "░░"
       }.toVector
 
   private def header(s: State, sb: StringBuilder): Unit =
-    sb.append(Terminal.Bold).append(Terminal.FgBright).append(" zam")
-    sb.append(Terminal.Reset).append(Terminal.DimGray).append("  jump to directory ")
+    sb.append(Terminal.Reset).append(Terminal.Bold).append(Terminal.Accent).append(" ❀ zam")
+    // the tagline needs room; skip it on narrow terminals so the line never wraps
+    if s.cols >= 66 then
+      sb.append(Terminal.Reset).append(Terminal.DimGray).append("  ·  jump somewhere lovely")
 
     val badge =
-      if isIdQuery(s.query) then Terminal.Warning + "[id #" + s.query + "]"
-      else if s.mode == Mode.Regex then Terminal.FgMagenta + "[regex]"
-      else Terminal.Accent + "[fuzzy]"
+      if isIdQuery(s.query) then Terminal.Warning + "  ♡ id #" + s.query
+      else if s.mode == Mode.Regex then Terminal.Lavender + "  ✧ regex"
+      else Terminal.Accent + "  ✿ fuzzy"
     val count = s.view.size.toString
+    sb.append(Terminal.Reset)
     sb.append(badge)
-    sb.append(Terminal.DimGray)
-    sb.append("  " + count + " item" + (if count == "1" then "" else "s"))
+    sb.append(Terminal.Reset).append(Terminal.DimGray)
+    sb.append("  ·  " + count + " place" + (if count == "1" then "" else "s"))
 
   private def input(s: State, sb: StringBuilder): Unit =
-    sb.append("  ").append(Terminal.Accent).append(Terminal.Bold).append(">").append(Terminal.Reset).append(" ")
-    if s.query.nonEmpty then sb.append(Terminal.FgBright).append(s.query)
-    sb.append(Terminal.Reverse).append(" ").append(Terminal.Reset)
+    sb.append("  ").append(Terminal.Bold).append(Terminal.AccentStrong).append("❯").append(Terminal.Reset).append(" ")
+    if s.query.nonEmpty then sb.append(Terminal.Cream).append(s.query)
+    // a little pink block cursor, cozy instead of harsh reverse video
+    sb.append(Terminal.CursorBg).append(Terminal.CursorFg).append(" ").append(Terminal.Reset)
 
   private def sep(sb: StringBuilder, cols: Int): Unit =
-    sb.append(Terminal.DimGray)
+    sb.append(Terminal.Rule)
     if cols > 0 then sb.append("─" * cols)
 
   private def row(s: State, sb: StringBuilder, i: Int, selected: Boolean): Unit =
     val it = s.view(i)
     val offs = s.highlight.getOrElse(i, Vector.empty).toSet
-    val marker = if selected then Terminal.Bold + Terminal.Accent + "▸ " else "  "
+    val marker = if selected then Terminal.Bold + Terminal.AccentStrong + "♡ " else "  "
     val idStr = padLeft((i + 1).toString, 3)
 
-    val base = if selected then Terminal.SelBg + Terminal.FgWhite else Terminal.FgDefault
-    val hi = Terminal.Bold + Terminal.Underline + Terminal.Accent
+    val base = if selected then Terminal.SelBg + Terminal.Cream else Terminal.FgDefault
+    val hi = Terminal.Bold + Terminal.Lavender
 
     val pathW = math.max(4, s.cols - 17)
     val visible = truncate(it.path, pathW)
@@ -168,7 +174,7 @@ object Picker:
     sb.append(Terminal.Reset).append(base)
     sb.append(" ").append(marker)
     sb.append(Terminal.Reset).append(base)
-    if selected then sb.append(idStr)
+    if selected then sb.append(Terminal.Bold).append(idStr)
     else sb.append(Terminal.DimGray).append(idStr)
     sb.append(base).append(" ")
 
@@ -182,24 +188,25 @@ object Picker:
         k += 1
 
     sb.append(base).append(" ")
-    if selected then sb.append(fmtScore(it.score))
+    if selected then sb.append(Terminal.Peach).append(fmtScore(it.score))
     else sb.append(Terminal.DimGray).append(fmtScore(it.score))
 
   private def footer(s: State, sb: StringBuilder): Unit =
     sb.append(Terminal.DimGray)
-    sb.append("  ").append(Terminal.Accent).append("↑↓").append(Terminal.DimGray).append(" move  ")
-    sb.append(Terminal.Accent).append("↵").append(Terminal.DimGray).append(" open  ")
-    sb.append(Terminal.Accent).append("esc").append(Terminal.DimGray).append(" cancel  ")
+    sb.append("  ").append(Terminal.Accent).append("↑↓").append(Terminal.DimGray).append(" move   ")
+    sb.append(Terminal.Accent).append("↵").append(Terminal.DimGray).append(" choose   ")
+    sb.append(Terminal.Accent).append("esc").append(Terminal.DimGray).append(" cancel   ")
     sb.append(Terminal.Accent).append("ctrl-r").append(Terminal.DimGray)
-    if s.mode == Mode.Regex then sb.append(" regex on") else sb.append(" regex")
-    if isIdQuery(s.query) then sb.append("  ").append(Terminal.Warning).append("selecting by id")
-    else sb.append("  ").append(Terminal.Accent).append("digits").append(Terminal.DimGray).append(" jump  ")
+    if s.mode == Mode.Regex then sb.append(" ✧ regex on") else sb.append(" regex")
+    if isIdQuery(s.query) then sb.append("  ").append(Terminal.Warning).append("♡ picking by id")
+    else sb.append("  ").append(Terminal.Accent).append("123").append(Terminal.DimGray).append(" by id")
+    sb.append(Terminal.Reset).append(Terminal.Rule).append("  ♡")
 
   private def finalizeLine(sb: StringBuilder, cols: Int, visible: Int): Unit =
     if visible < cols then sb.append(" " * (cols - visible))
     sb.append(Terminal.Reset).append("\r\n")
 
-  private def frame(s: State): String =
+  private[zam] def frame(s: State): String =
     val cols = s.cols
     val sb = new StringBuilder
     sb.append(Terminal.Home)
@@ -227,10 +234,10 @@ object Picker:
     if s.view.isEmpty then
       val msg =
         if s.mode == Mode.Regex && !isValidRegex(s.query) then
-          s"bad regex '${s.query}' — ctrl-r to switch back · esc to cancel"
+          s"that pattern won't work ✧ — ctrl-r to switch back · esc to cancel"
         else if s.query.nonEmpty then
-          s""""${s.query}" found nothing — try fewer terms · esc to cancel"""
-        else "nothing to show"
+          s""""${s.query}" didn't match anywhere — try fewer letters · esc to cancel"""
+        else "nothing remembered yet — go visit some directories ♡"
       sb.append(Terminal.DimGray).append("  ").append(msg)
       finalizeLine(sb, cols, 2 + msg.length)
 
@@ -242,6 +249,9 @@ object Picker:
 
   def run(items: Vector[Item]): Result =
     if items.isEmpty then return Result.Unavailable
+    // refuse to start when stdin is not a human (piped/redirected): the raw
+    // console read would block forever even though a console window exists
+    if !Terminal.stdinIsInteractive() then return Result.Unavailable
     if !Terminal.enterRaw() then return Result.Unavailable
     try
       val (cols, rows) = Terminal.size()

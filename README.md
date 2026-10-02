@@ -91,19 +91,32 @@ coursier.
    The jar lands at:
 
    ```text
-   target/out/jvm/scala-3.9.0/zam/zam-assembly-0.1.0.jar
+   target/out/jvm/scala-3.9.0/zam/zam-assembly-0.2.0.jar
    ```
 
-2. Add the `bin/` directory to your `PATH`. The launcher `bin/z.cmd`
-   (originally shipped as `bin/zam.cmd`) finds the jar using a path *relative
-   to the script*, so you can move or copy the whole repo without editing
-   anything.
+2. Put a launcher next to the jar and add that directory to your `PATH`. The
+   launchers find the jar via a path *relative to the script*, so you can
+   move or copy the whole directory without editing anything. On Windows use
+   `z.cmd` (see [cmd.exe](#cmdexe) below — it actually `cd`s for you) and
+   `zam.cmd` as a plain forwarder for scripts. On Unix, a two-line
+   `zam` script does the same job:
+
+   ```sh
+   #!/bin/sh
+   exec java --enable-native-access=ALL-UNNAMED -jar "$(dirname "$0")/zam-assembly-0.2.0.jar" "$@"
+   ```
+
+   `--enable-native-access` (Java 21+) keeps the interactive picker's console
+   access warning-free; without it the picker still works but Java prints a
+   warning per run.
 
 > [!TIP]
 > In PowerShell, a `.cmd` batch file runs in a child process and can never
 > change the *parent* shell's working directory. For `z <dir>` to actually
-> `cd`, you must use the [PowerShell integration](#powershell-integration)
-> below — the batch launcher is for the CLI and for scripts.
+> `cd` in PowerShell, use the [PowerShell integration](#powershell-integration)
+> below. In **cmd.exe** the situation is different — a batch file runs
+> *in-process* there, so `z.cmd` performs the `cd` itself (and records the
+> visit), giving you `z <query>` with no profile setup at all.
 
 Startup on the JVM (~0.3–0.6 s) is the one thing a native binary does
 better. For production, package the same code with Scala Native or GraalVM
@@ -129,15 +142,18 @@ Bare invocations follow zoxide semantics:
 
 ```text
 zam add <path>...      record visits        [--no-verify]
-zam query <query>      print best match     [-l | -s | -a | -i], [--max-results=N], [--exclude=P1,P2]
+zam query <query>      print best match     [-l | -s | -a | -i | --json], [--max-results=N], [--exclude=P1,P2]
 zam list               remembered dirs, best first
 zam remove <path>...   forget paths
+zam move <old> <new>   re-point a remembered dir (histories merge)
+zam alias [<n> <tgt>]  named shortcuts; `zam alias` lists, `zam alias n` resolves, `alias -d n` drops
 zam prune              forget gone dirs last seen > --max-age=DAYS ago (default 90); --dry-run
 zam explain <query>    why each candidate ranks where it does
 zam stats              database statistics
+zam doctor             check the database for problems
 zam config [k=v ...]   view/set alpha, tau, max_visits   (also: config reset)
-zam shell              print PowerShell integration
-zam import <file>      add dirs from a shell history / log file
+zam shell [<name>]     print shell integration: powershell (default), bash, zsh, fish
+zam import <file>      add dirs from a shell history / log file   [--verify]
 zam export [<file>]    write remembered paths, one per line
 zam demo               scoring comparison vs zoxide
 zam version            print version
@@ -157,6 +173,8 @@ zam add C:\src\project-a C:\src\project-b
 - Verifies the path is a directory by default; `--no-verify` records it
   blindly (useful for importing).
 - First visit creates the entry; later visits append a timestamp.
+- Rejected paths are reported and make the command exit `1`, so scripts can
+  detect a failed add.
 
 ### query
 
@@ -165,9 +183,10 @@ Prints the best match for a fuzzy query.
 ```console
 zam query foo bar          # both terms must appear, in order
 zam query -l               # list top matches, one path per line
-zam query -s               # like -l, but with scores
+zam query -s               # like -l, but with scores (implies listing)
 zam query -a               # include directories that no longer exist
 zam query -i               # interactive picker (built-in TUI) — or --interactive
+zam query --json           # machine-readable: [{"path","score","visits","last"}, ...]
 zam query --max-results=5  # cap the result set
 zam query --exclude=a,b    # skip paths containing these components
 ```
@@ -180,13 +199,19 @@ on this to decide whether to `cd`.
 `zam query -i` opens a self-contained full-screen picker (no external
 dependencies — same spirit as fzf, but built in). It shows the ranked list
 with score and a scrollbar; on Windows it drives the console directly via
-JNA, on Unix via `/dev/tty`.
+JNA, on Unix via `/dev/tty`. The theme is soft pastel — a sakura-pink header
+(`❀ zam`), a plum selection band with a heart marker, lavender match
+highlights, peach scores, and a little pink block cursor:
 
 ```text
-▸ #1    /home/you/work/zam-cli        9.721
-  #2    /home/you/projects/zig        3.114
-  #3    /home/you/Downloads           0.902
-  …
+ ❀ zam  ·  jump somewhere lovely  ✿ fuzzy  ·  3 places
+ ❯ wall█
+────────────────────────────────────────────────────────
+ ♡   1  C:\Users\you\Pictures\wallpapers\sakura   4.850
+     2  C:\Users\you\Pictures\icons               1.203
+     3  C:\Users\you\Pictures\avatars             0.902
+────────────────────────────────────────────────────────
+ ↑↓ move   ↵ choose   esc cancel   ctrl-r regex   123 by id  ♡
 ```
 
 - **Type to filter** — the fuzzy `zoxide` matcher (same semantics as
@@ -195,7 +220,7 @@ JNA, on Unix via `/dev/tty`.
 - **`Ctrl-R`** — toggle regex mode; the query becomes a real (case-insensitive)
   regular expression, and matched runs are highlighted.
 - **`Ctrl-W`** — delete the last word, **`Ctrl-U`** — clear the query,
-  **`↑/↓/Home/End/PgUp/PgDn`** — move the cursor.
+  **`↑/↓/Ctrl-P/Ctrl-N/Ctrl-K/Ctrl-J/Home/End/PgUp/PgDn`** — move the cursor.
 - **`Enter`** — choose the current row; **`Esc`** or **`Ctrl-C`** — cancel.
 - If the terminal is too small (< 40 cols or < 10 rows) the picker skips
   itself and prints the ranked list instead, so scripts never hang.
@@ -211,6 +236,44 @@ Forgets paths entirely, including their history.
 
 ```console
 zam remove C:\src\old-project
+```
+
+### move
+
+Renamed or relocated a project? Re-point its whole history at the new path
+in one step (if the destination is already remembered, the two histories
+merge):
+
+```console
+zam move C:\src\old-project C:\work\renamed-project
+```
+
+The target is verified to exist; `--no-verify` skips that check.
+
+### alias
+
+Named shortcuts — one word that always jumps to one directory, no matter how
+it ranks. An exact alias match beats fuzzy matching:
+
+```console
+zam alias work C:\src\dayjob     # point an alias at a path
+zam alias docs C:\\doc           # or at whatever a fuzzy query matches today
+zam alias                        # list all aliases
+zam alias work                   # print the target (handy in scripts)
+zam alias -d work                # drop an alias
+```
+
+`z work`, `zam work`, and `zam query work` all honor the alias; a broken
+alias (target deleted) is reported instead of silently ignored, and
+`zam doctor` flags it.
+
+### doctor
+
+Health check for the database — dead entries, duplicate spellings of the
+same directory, future timestamps, dangling aliases, broken config:
+
+```console
+zam doctor        # exit 0 = all good, 1 = problems listed
 ```
 
 ### prune
@@ -257,17 +320,26 @@ zam config reset               # restore defaults
 
 ### shell
 
-Prints the PowerShell integration snippet (see
-[PowerShell integration](#powershell-integration)).
+Prints an integration snippet for your shell — `zam shell powershell` (the
+default), `zam shell bash`, `zam shell zsh`, or `zam shell fish`. Each
+snippet installs a `z` function (jump, list, previous-dir) plus a per-prompt
+hook that records every directory change. See
+[PowerShell integration](#powershell-integration) below for the Windows
+details; the bash/zsh/fish snippets resolve the launcher via `zam` on PATH
+or a `ZAM_JAR` environment variable.
 
 ### import / export
 
 - `zam import <file>` — parse a shell history / log and record every
-  mentioned directory (`cd` prefixed lines, `&&`/`;` chains, and quoted
-  paths are handled). Useful for a one-time seed from your old zoxide or
-  PSReadLine history.
-- `zam export [<file>]` — write remembered paths (best first) to a text file,
-  default `zam-export.txt` in the data directory.
+  mentioned directory. Parsing is strict: a line is used when it is a bare
+  *absolute* path, or a `cd`-family command (`cd`, `chdir`, `pushd`,
+  `Set-Location`, `sl`, `z`, `zoxide`, quoted paths, `&&`/`;` chains)
+  with an absolute argument. Anything else — `git commit`, `ls -la`,
+  relative paths — is skipped and counted, never invented into a fake
+  directory. `--verify` additionally records only paths that still exist.
+- `zam export [<file>]` — write remembered paths (best first). A relative
+  file name lands in the **current directory**; with no argument the
+  default `zam-export.txt` goes to the data directory.
 
 ### demo
 
@@ -320,10 +392,19 @@ still beats many ancient ones.
 
 - **Location:** `%LOCALAPPDATA%\zam\db.json`, or anywhere set by
   `ZAM_DATA_DIR` or `--data-dir`.
-- **Format:** plain JSON, epoch-second timestamps (UTC), pretty-printed.
+- **Format:** plain JSON, epoch-second timestamps (UTC), pretty-printed,
+  with the scoring `config`, optional `aliases`, and the `entries`.
 - **Mutation:** writes go to `db.json.tmp` and are atomically renamed over
   `db.json`, guarded by an OS file lock on `db.lock`. Concurrent shells
   cannot corrupt the file.
+- **Backups:** every successful save rotates the previous good generation
+  into `db.json.bak`, so any bug or crash is one file-copy away from
+  recovery.
+- **Corruption is loud, never silent:** if `db.json` cannot be decoded, zam
+  warns on stderr, quarantines the raw bytes as `db.json.corrupt-<time>.json`,
+  and starts from an empty database — it will never overwrite a file it
+  could not read (and `db.json.bak` still holds the last good generation).
+  `zam doctor` re-checks structure, duplicates, and dead entries.
 
 Example:
 
@@ -404,12 +485,29 @@ your profile is untouched.
 
 ### Why the hook needs a function and not just the batch file
 
-A `.cmd` stub in `PATH` cannot affect the calling shell: `z.cmd` runs in a
-child `cmd.exe`, and any `cd` it performs is discarded when it exits. zoxide
-has exactly the same constraint on Windows and solves it the same way — a
-profile function. If all you want is the *output* of a query from a script,
-`z.cmd query <query>` prints the path to stdout and is perfectly usable
-without the hook.
+In PowerShell, a `.cmd` stub in `PATH` cannot affect the calling shell:
+`z.cmd` runs in a child `cmd.exe`, and any `cd` it performs is discarded when
+it exits. zoxide has exactly the same constraint on Windows and solves it the
+same way — a profile function. If all you want is the *output* of a query
+from a script, `z.cmd query <query>` prints the path to stdout and is
+perfectly usable without the hook.
+
+## cmd.exe
+
+PowerShell needs a function to `cd`, but cmd.exe runs batch files
+*in-process* — so there the launcher itself can do the jump. `z.cmd` is
+written for that:
+
+- `z` — `cd` to your home directory
+- `z <existing-dir>` — `cd` straight there
+- `z <query>` — `cd` to the best match (recorded automatically, since cmd.exe
+  has no prompt hook)
+- `z -i` — interactive picker, then `cd` to the chosen row
+- `z -l`, `z -s`, `zam add`, `zam stats`, … — everything else is forwarded
+  to the jar untouched
+
+In PowerShell the `z` *function* from the integration snippet shadows this
+batch file (functions win), so the two coexist without interference.
 
 ## Importing your old zoxide history
 
@@ -427,7 +525,7 @@ Build and test:
 
 ```console
 sbt compile                      # compile
-sbt "Test / runMain zam.TestMain"  # dependency-free test runner (85 checks)
+sbt "Test/runMain zam.TestMain"  # dependency-free test runner (142 checks)
 ```
 
 Source layout (`.scala` files under `src/main/scala/zam/`):
@@ -440,7 +538,8 @@ Source layout (`.scala` files under `src/main/scala/zam/`):
 | `Cli`           | `Cli.scala`     | Argument parsing and all subcommands, including the bare-invocation logic. |
 | `Picker`        | `Picker.scala`  | Built-in interactive picker: fuzzy / regex / id modes, scrolling TUI.   |
 | `Terminal`      | `Terminal.scala`| Raw console I/O via JNA (Windows) and /dev/tty+stty (Unix); ANSI/VT keys. |
-| `Shell`         | `Shell.scala`   | The PowerShell integration snippet (records dirs, defines `z`).        |
+| `ConsoleIO`     | `ConsoleIO.scala`| UTF-16 console output (`WriteConsoleW`) so non-ASCII paths never garble. |
+| `Shell`         | `Shell.scala`   | Integration snippets for PowerShell, bash, zsh, and fish.               |
 | `Json`          | `Json.scala`    | Dependency-free JSON reader/writer.                                    |
 
 The scoring code has no external dependencies — it is pure Scala — so it
@@ -450,15 +549,19 @@ transports unchanged to Scala Native or GraalVM for a native binary.
 
 ```console
 zam add        <path>...       record visits            (--no-verify)
-zam query      [query]         print best match         (-l -s -a -i --max-results=N --exclude=P1,P2)
+zam query      [query]         print best match         (-l -s -a -i --json --max-results=N --exclude=P1,P2)
 zam list                       list remembered dirs
 zam remove     <path>...       forget paths
+zam move       <old> <new>     re-point a moved directory
+zam alias      [n] [target]    named shortcuts          (alias -d <name> drops one)
 zam prune                      prune gone dirs          (--max-age=DAYS, default 90; --dry-run)
 zam explain    <query>         show scoring breakdown
 zam stats                      database statistics
+zam doctor                     check the database for problems
 zam config     [k=v ...]       alpha / tau / max_visits  (config reset)
-zam shell                      print PowerShell integration
-zam import     <file>          add dirs from a history/log file
+zam shell      [powershell|bash|zsh|fish]
+                               print shell integration
+zam import     <file>          add dirs from a history/log file   (--verify)
 zam export     [<file>]        write remembered paths
 zam demo                       comparison vs zoxide
 zam version                    print version

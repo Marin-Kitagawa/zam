@@ -19,10 +19,24 @@ object Model:
     def lastVisit: Option[Long] = t.lastOption
     def count: Long = t.length.toLong
 
-  final case class Db(config: Config, entries: Vector[Entry]):
+  /** A named shortcut for one directory: `zam work` jumps where `work` points.
+    * Kept as an ordered vector of (name, path) so the JSON file and `zam alias`
+    * listing preserve insertion order; lookups are case-insensitive. */
+  final case class Db(config: Config, entries: Vector[Entry], aliases: Vector[(String, String)] = Vector.empty):
     def entryCount: Int = entries.length
     def totalVisits: Long = entries.foldLeft(0L)((acc, e) => acc + e.count)
     def isWindows: Boolean = osIsWindows
+
+    def findAlias(name: String): Option[String] =
+      val k = name.toLowerCase(Locale.ROOT)
+      aliases.collectFirst { case (n, p) if n.toLowerCase(Locale.ROOT) == k => p }
+    def withAlias(name: String, path: String): Db =
+      val k = name.toLowerCase(Locale.ROOT)
+      val rest = aliases.filterNot(_._1.toLowerCase(Locale.ROOT) == k)
+      copy(aliases = rest :+ ((name, path)))
+    def withoutAlias(name: String): Db =
+      val k = name.toLowerCase(Locale.ROOT)
+      copy(aliases = aliases.filterNot(_._1.toLowerCase(Locale.ROOT) == k))
 
   private val osIsWindows =
     System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win")

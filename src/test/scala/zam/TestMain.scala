@@ -27,6 +27,7 @@ object TestMain:
     matcherTests()
     scoreTests()
     storeTests()
+    importParserTests()
     cliTests()
     pickerTests()
     println("")
@@ -179,7 +180,80 @@ object TestMain:
       )
       val pruned = Store.prune(mixed, 90)
       eq("prune keeps 2 of 3", pruned.entryCount, 2)
+
+      // move: repoint, and merge when the destination already exists
+      val movedDir = Files.createTempDirectory("zam-moved").toString
+      val src = Model.Db(Model.Config.Default, Vector(
+        Model.Entry(Store.canonicalize(d1), Vector(now - 10, now - 5)),
+        Model.Entry(movedDir, Vector(now - 2))
+      ))
+      Store.move(src, d1, movedDir) match
+        case Right((merged, to)) =>
+          eq("move: merges into destination", to, Store.canonicalize(movedDir))
+          eq("move: single merged entry", merged.entryCount, 1)
+          eq("move: merged timestamps sorted", merged.entries.head.t, Vector(now - 10, now - 5, now - 2))
+        case Left(msg) => check(s"move: unexpected failure: $msg")(false)
+      Store.move(src, "/nowhere/remembered/xyz", movedDir) match
+        case Left(_)   => check("move: unknown source is an error")(true)
+        case Right(_)  => check("move: unknown source is an error")(false)
+      Store.move(src, d1, d1) match
+        case Left(_)   => check("move: same source and target is an error")(true)
+        case Right(_)  => check("move: same source and target is an error")(false)
+
+      // corrupt db: load quarantines the file and the previous .bak survives
+      val corruptDir = dir.resolve("corrupt")
+      val goodDb = Model.Db(Model.Config.Default, Vector(Model.Entry(Store.canonicalize(d1), Vector(now))))
+      Store.save(corruptDir, goodDb)
+      Store.save(corruptDir, goodDb) // two generations: db.json + db.json.bak
+      val goodBak = Files.readAllBytes(corruptDir.resolve("db.json.bak"))
+      Files.writeString(corruptDir.resolve("db.json"), "THIS IS NOT JSON {{{")
+      val (recovered, warning) = Store.loadReport(corruptDir)
+      eq("corrupt: loads empty", recovered.entryCount, 0)
+      check("corrupt: warns")(warning.exists(_.contains("corrupt")))
+      check("corrupt: quarantine file created")(
+        Files.list(corruptDir).iterator().asScala.exists(_.getFileName.toString.startsWith("db.json.corrupt-"))
+      )
+      Store.save(corruptDir, goodDb) // first save after corruption...
+      eq("corrupt: db.json.bak still holds the last good generation",
+        Files.readAllBytes(corruptDir.resolve("db.json.bak")).toIndexedSeq, goodBak.toIndexedSeq)
+
+      // aliases survive the codec round trip
+      val aliasDb = goodDb.withAlias("work", Store.canonicalize(d1)).withAlias("home", movedDir)
+      Store.save(dir.resolve("alias"), aliasDb)
+      val aliasLoaded = Store.load(dir.resolve("alias"))
+      eq("alias: round trip", aliasLoaded.aliases, aliasDb.aliases)
+      eq("alias: lookup is case-insensitive", aliasLoaded.findAlias("WORK"), Some(Store.canonicalize(d1)))
+      val dropped = aliasLoaded.withoutAlias("work")
+      eq("alias: delete", dropped.findAlias("work"), None)
+      eq("alias: delete keeps the other", dropped.findAlias("home"), Some(movedDir))
     finally deleteTree(dir)
+
+  // ------------------------------------------------------------ import parser
+
+  def importParserTests(): Unit =
+    eq("hist: bare absolute path", Store.parseHistoryLine("C:\\src\\proj"), Some("C:\\src\\proj"))
+    eq("hist: cd space", Store.parseHistoryLine("cd C:\\src\\proj"), Some("C:\\src\\proj"))
+    eq("hist: cd tab", Store.parseHistoryLine("cd\tC:\\src\\proj"), Some("C:\\src\\proj"))
+    eq("hist: cd quoted", Store.parseHistoryLine("cd \"C:\\src my\\proj\""), Some("C:\\src my\\proj"))
+    eq("hist: chain &&", Store.parseHistoryLine("cd C:\\a && cd C:\\b"), Some("C:\\a"))
+    eq("hist: chain ;", Store.parseHistoryLine("cd C:\\a; git status"), Some("C:\\a"))
+    eq("hist: Set-Location", Store.parseHistoryLine("Set-Location C:\\Windows"), Some("C:\\Windows"))
+    eq("hist: Set-Location -LiteralPath", Store.parseHistoryLine("Set-Location -LiteralPath C:\\Windows"), Some("C:\\Windows"))
+    eq("hist: sl", Store.parseHistoryLine("sl C:\\Windows"), Some("C:\\Windows"))
+    eq("hist: pushd", Store.parseHistoryLine("pushd C:\\Windows"), Some("C:\\Windows"))
+    eq("hist: zoxide z", Store.parseHistoryLine("z C:\\src\\proj"), Some("C:\\src\\proj"))
+    eq("hist: tilde", Store.parseHistoryLine("cd ~/proj").map(_ => "ok"), Some("ok"))
+    eq("hist: bare tilde", Store.parseHistoryLine("~"), Some("~"))
+    eq("hist: forward slashes", Store.parseHistoryLine("cd C:/src/proj"), Some("C:/src/proj"))
+    eq("hist: git command skipped", Store.parseHistoryLine("git commit -m hi"), None)
+    eq("hist: ls skipped", Store.parseHistoryLine("ls -la"), None)
+    eq("hist: cd home dash skipped", Store.parseHistoryLine("cd -"), None)
+    eq("hist: cd no-arg skipped", Store.parseHistoryLine("cd"), None)
+    eq("hist: relative skipped", Store.parseHistoryLine("cd src/proj"), None)
+    eq("hist: comment skipped", Store.parseHistoryLine("# cd C:\\junk"), None)
+    eq("hist: empty skipped", Store.parseHistoryLine("   "), None)
+    eq("hist: popd alone skipped", Store.parseHistoryLine("popd"), None)
+    eq("hist: export skipped", Store.parseHistoryLine("export PATH=/usr/bin:$PATH"), None)
 
   // ------------------------------------------------------------------- cli
 
@@ -247,6 +321,70 @@ object TestMain:
       val (cx2, _) = runCli("--data-dir", expDir.toString, "export")
       eq("cli: export creates the data dir", (cx2, Files.isDirectory(expDir)), (0, true))
       eq("cli: export writes a rank-ordered file", Files.isRegularFile(expDir.resolve("zam-export.txt")), true)
+
+      // doctor is happy with a healthy database
+      val (cdc, odc) = runCli("--data-dir", dataDir.toString, "doctor")
+      check("cli: doctor clean db exits 0")(cdc == 0 && odc.contains("all good"))
+
+      // a rejected path makes `add` exit non-zero (was 0 — scripts could not tell)
+      val (cbad, _) = runCli("--data-dir", dataDir.toString, "add", dataDir.resolve("definitely-missing").toString)
+      eq("cli: add nonexistent exits 1", cbad, 1)
+      val (cbad2, _) = runCli("--data-dir", dataDir.toString, "add", "--no-verify", dataDir.resolve("definitely-missing").toString)
+      eq("cli: add --no-verify still succeeds", cbad2, 0)
+
+      // -s lists with scores (it used to print the bare best match)
+      val (cs, os) = runCli("--data-dir", dataDir.toString, "query", "-s")
+      check("cli: -s implies list with scores")(
+        cs == 0 && os.split("\\R").length >= 2 && os.linesIterator.forall(l => l.matches("\\d+\\.\\d+\t.*"))
+      )
+      // --json emits a JSON array of {path, score, visits, last}
+      val (cj, oj) = runCli("--data-dir", dataDir.toString, "query", "--json")
+      val parsed = Json.parse(oj)
+      check("cli: --json parses")(parsed.arr.nonEmpty)
+      check("cli: --json has path+score fields")(
+        parsed.arr.head.obj.toMap.contains("path") && parsed.arr.head.obj.toMap.contains("score")
+      )
+      // invalid --max-results is an error, not a silent ignore
+      val (cmm, _) = runCli("--data-dir", dataDir.toString, "query", "--max-results=abc")
+      eq("cli: bad --max-results exits 2", cmm, 2)
+
+      // aliases: set, resolve, beats fuzzy matching, delete
+      val (ca, _) = runCli("--data-dir", dataDir.toString, "alias", "wkh", d1)
+      eq("cli: alias set", ca, 0)
+      val (car, or) = runCli("--data-dir", dataDir.toString, "alias", "wkh")
+      eq("cli: alias resolves", (car, or), (0, d1))
+      val (caq, oq2) = runCli("--data-dir", dataDir.toString, "wkh")
+      eq("cli: bare alias beats fuzzy", (caq, oq2), (0, d1))
+      val (caa, _) = runCli("--data-dir", dataDir.toString, "alias", "-d", "wkh")
+      eq("cli: alias delete", caa, 0)
+      val (cax, _) = runCli("--data-dir", dataDir.toString, "alias", "wkh")
+      eq("cli: deleted alias is gone", cax, 1)
+
+      // move: repoint a remembered directory
+      val (cmv, _) = runCli("--data-dir", dataDir.toString, "move", d1, d2)
+      eq("cli: move repoints", cmv, 0)
+      check("cli: move merged history")(
+        Store.load(dataDir).entries.exists(e => Store.same(e.path, Store.canonicalize(d2)) && e.count >= 1)
+      )
+      eq("cli: move source gone",
+        Store.load(dataDir).entries.exists(e => Store.same(e.path, Store.canonicalize(d1))), false)
+
+      // import of a PowerShell-style history: no crash, garbage skipped
+      val impDir2 = dataDir.resolve("imp2")
+      val histF2 = Files.createTempFile("zam-hist-ps", ".txt")
+      try
+        Files.writeString(histF2,
+          s"""Set-Location C:\\Windows
+            |cd ${Store.canonicalize(d1)}
+            |git commit -m "not a directory"
+            |ls -la
+            |cd
+            |# comment
+            |""".stripMargin)
+        val (ci2, _) = runCli("--data-dir", impDir2.toString, "import", histF2.toString)
+        eq("cli: PSReadLine import works", ci2, 0)
+        eq("cli: PSReadLine import recorded 2 dirs", Store.load(impDir2).entryCount, 2)
+      finally Files.deleteIfExists(histF2)
     finally deleteTree(dataDir)
 
   // ---------------------------------------------------------------- picker
@@ -291,6 +429,14 @@ object TestMain:
 
     val (sr, _) = Picker.update(st(""), Key.CtrlR)
     eq("picker: ctrl-r toggles regex mode", sr.mode, Mode.Regex)
+    val (sp, _) = Picker.update(Picker.recompute(st("")).copy(cursor = 2), Key.CtrlP)
+    eq("picker: ctrl-p moves up", sp.cursor, 1)
+    val (sn, _) = Picker.update(Picker.recompute(st("")).copy(cursor = 2), Key.CtrlN)
+    eq("picker: ctrl-n moves down", sn.cursor, 3)
+    val (sk, _) = Picker.update(Picker.recompute(st("")).copy(cursor = 2), Key.CtrlK)
+    eq("picker: ctrl-k moves up", sk.cursor, 1)
+    val (sj, _) = Picker.update(Picker.recompute(st("")).copy(cursor = 2), Key.CtrlJ)
+    eq("picker: ctrl-j moves down", sj.cursor, 3)
     val (su, _) = Picker.update(st("foo bar baz"), Key.CtrlU)
     eq("picker: ctrl-u clears query", su.query, "")
     val (sw, _) = Picker.update(st("foo bar baz  "), Key.CtrlW)
