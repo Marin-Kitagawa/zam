@@ -1,7 +1,7 @@
 ThisBuild / scalaVersion := "3.9.0"
 ThisBuild / organization := "dev.zam"
 // The release workflow overrides this from the pushed tag (v0.3.0 -> 0.3.0).
-ThisBuild / version      := sys.env.getOrElse("ZAM_VERSION", "0.3.0")
+ThisBuild / version      := sys.env.getOrElse("ZAM_VERSION", "0.3.1")
 
 lazy val root = (project in file("."))
   .settings(

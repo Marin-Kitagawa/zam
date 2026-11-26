@@ -16,7 +16,7 @@ object Cli:
       .flatMap(p => Option(p.getImplementationVersion))
       .map(_.trim)
       .filter(_.nonEmpty)
-      .getOrElse("0.3.0")
+      .getOrElse("0.3.1")
 
   final case class Parsed(flags: Map[String, String], positionals: Vector[String])
 
@@ -70,14 +70,20 @@ object Cli:
     warning.foreach(errln)
     loaded
 
-  /** Peel `--data-dir` (either form) out of the raw argument stream. */
+  /** Peel `--data-dir` (either form) out of the raw argument stream. Stops at
+    * `--`, so a literal `--data-dir` can still be completed/queried. */
   private def peelGlobal(args: Seq[String]): (Option[Path], Vector[String]) =
     var dir: Option[Path] = None
     val buf = ListBuffer.empty[String]
     val it = args.iterator
+    var afterDash = false
     while it.hasNext do
       val a = it.next()
-      if a == "--data-dir" then
+      if afterDash then buf += a
+      else if a == "--" then
+        afterDash = true
+        buf += a // keep it: `divide` needs the separator too
+      else if a == "--data-dir" then
         if it.hasNext then dir = Some(Paths.get(it.next()))
       else if a.startsWith("--data-dir=") then
         dir = Some(Paths.get(a.substring("--data-dir=".length)))

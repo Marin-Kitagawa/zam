@@ -472,6 +472,10 @@ object TestMain:
         val (cc3, oc3) = runCli("--data-dir", dataDir.toString, "complete",
           "--cwd", cdir.toString, "--", "-")
         check("cli: complete offers flags for a dash")(cc3 == 0 && oc3.linesIterator.contains("-i"))
+        // `--data-dir` behind `--` is a word, not the global option
+        val (cc4, oc4) = runCli("--data-dir", dataDir.toString, "complete",
+          "--cwd", cdir.toString, "--", "--data-dir")
+        eq("cli: --data-dir after -- is not peeled", (cc4, oc4), (0, ""))
       finally deleteTree(cdir)
 
       // aliases: set, resolve, beats fuzzy matching, delete

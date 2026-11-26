@@ -91,7 +91,7 @@ coursier.
    The jar lands at:
 
    ```text
-   target/out/jvm/scala-3.9.0/zam/zam-assembly-0.3.0.jar
+   target/out/jvm/scala-3.9.0/zam/zam-assembly-<version>.jar
    ```
 
 2. Put a launcher next to the jar and add that directory to your `PATH`. The
@@ -103,7 +103,7 @@ coursier.
 
    ```sh
    #!/bin/sh
-   exec java --enable-native-access=ALL-UNNAMED -jar "$(dirname "$0")/zam-assembly-0.3.0.jar" "$@"
+   exec java --enable-native-access=ALL-UNNAMED -jar "$(dirname "$0")/zam-assembly-<version>.jar" "$@"
    ```
 
    `--enable-native-access` (Java 21+) keeps the interactive picker's console
@@ -574,7 +574,7 @@ Build and test:
 
 ```console
 sbt compile                      # compile
-sbt "Test/runMain zam.TestMain"  # dependency-free test runner (172 checks)
+sbt "Test/runMain zam.TestMain"  # dependency-free test runner (173 checks)
 ```
 
 Source layout (`.scala` files under `src/main/scala/zam/`):
@@ -615,9 +615,11 @@ that `java -jar … version` reports the tag — so the binary and the tag can
 never drift. It uploads the jar plus `SHA256SUMS.txt` to a GitHub Release and
 uses the matching `CHANGELOG.md` section as the release notes.
 
-Nothing else is needed: `sbt assembly` locally still produces
-`zam-assembly-0.3.0.jar` (or whatever `ZAM_VERSION` is set to), and the same
-tag-driven flow can be re-run from **Actions → Release → Run workflow**.
+Nothing else is needed: `sbt assembly` locally produces
+`zam-assembly-<version>.jar` (the fallback version in `build.sbt`, or whatever
+`ZAM_VERSION` is set to), and the same tag-driven flow can be re-run from
+**Actions → Release → Run workflow**. Pull requests and pushes to `main` run
+the test suite through `.github/workflows/ci.yml`.
 
 ## Command quick reference
 

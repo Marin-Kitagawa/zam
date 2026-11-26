@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.1 — 2026-11-26
+
+### Fixed
+
+- **`--data-dir` was peeled out of the arguments even after `--`.** A command
+  like `zam query -- --data-dir` (or completing a literal `--data-dir` word)
+  lost the token and behaved as if no query had been given. Global option
+  peeling now stops at `--`, matching the rest of the parser.
+
+### Added
+
+- **CI workflow** (`.github/workflows/ci.yml`) — the dependency-free test
+  suite now runs on every push to `main` and every pull request, so
+  regressions are caught before a release tag is cut. Releases stay in
+  `release.yml`.
+
 ## 0.3.0 — 2026-11-26
 
 ### Fixed
@@ -49,8 +65,10 @@
   `java -jar … version` reports the tag, attaches the jar plus
   `SHA256SUMS.txt` to a GitHub Release, and uses the matching `CHANGELOG.md`
   section as release notes. The build version comes from `ZAM_VERSION` (set
-  from the tag) with `0.3.0` as the local default, and `zam version` reads the
+  from the tag) with `0.3.1` as the local default, and `zam version` reads the
   packaged manifest, so the tag and the binary cannot drift.
+- **CI on every push and pull request** (`.github/workflows/ci.yml`): the
+  dependency-free test suite now gates `main`, not just tags.
 - **`zam complete [<word>]`** — the completion engine behind every shell
   snippet. Filesystem-first, filesystem-aware for path-like words
   (`z C:\Us<TAB>`, `z ../pro<TAB>`), flag completion (`z -<TAB>`), `--cwd`,
