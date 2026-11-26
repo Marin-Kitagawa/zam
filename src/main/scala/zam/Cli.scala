@@ -2,12 +2,21 @@ package zam
 
 import java.nio.file.{Files, Path, Paths}
 import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters.*
 
 import Json.Value
 
 object Cli:
 
-  val Version = "0.2.0"
+  /** Version reported by `zam version`. The packaged jar carries the sbt
+    * version (the release workflow sets it from the git tag); `sbt run` and
+    * the test runner fall back to the development version. */
+  val Version: String =
+    Option(getClass.getPackage)
+      .flatMap(p => Option(p.getImplementationVersion))
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .getOrElse("0.3.0")
 
   final case class Parsed(flags: Map[String, String], positionals: Vector[String])
 
@@ -39,6 +48,8 @@ object Cli:
         case "add"                         => cmdAdd(dir, rest.tail.toVector)
         case "query" | "q"                 => cmdQuery(dir, rest.tail.toVector)
         case "list" | "ls"                 => cmdList(dir, rest.tail.toVector)
+        case "recent"                      => cmdRecent(dir, rest.tail.toVector)
+        case "complete"                    => cmdComplete(dir, rest.tail.toVector)
         case "remove" | "rm"               => cmdRemove(dir, rest.tail.toVector)
         case "prune"                       => cmdPrune(dir, rest.tail.toVector)
         case "explain" | "why"             => cmdExplain(dir, rest.tail.toVector)
@@ -73,24 +84,40 @@ object Cli:
       else buf += a
     (dir, buf.toVector)
 
+  /** Flags that consume the following token as their value, so both
+    * `--regex=foo` and `--regex foo` work. */
+  private val ValueFlags =
+    Set("max-results", "exclude", "regex", "cwd", "limit", "max-age")
+
   /** Split arguments into flags (`-x` / `--name` / `--name=value`) and
     * positionals. `--` forces the remainder to be positional. */
   def divide(args: Seq[String]): Parsed =
+    val raw = args.toIndexedSeq
     var flags = Map.empty[String, String]
     var pos = Vector.empty[String]
-    val it = args.iterator
+    var i = 0
     var afterDash = false
-    while it.hasNext do
-      val a = it.next()
+    while i < raw.length do
+      val a = raw(i)
       if afterDash then pos :+= a
       else if a == "--" then afterDash = true
       else if a.startsWith("--") then
         val eq = a.indexOf('=')
         if eq > 0 then flags += ((a.substring(2, eq), a.substring(eq + 1)))
-        else flags += ((a.substring(2), ""))
+        else
+          val name = a.substring(2)
+          if ValueFlags.contains(name) && i + 1 < raw.length && !isFlagLike(raw(i + 1)) then
+            flags += ((name, raw(i + 1)))
+            i += 1
+          else flags += ((name, ""))
       else if a.startsWith("-") && a.length > 1 then flags += ((a.substring(1), ""))
       else pos :+= a
+      i += 1
     Parsed(flags, pos)
+
+  private def isFlagLike(s: String): Boolean =
+    s.length > 1 && s.startsWith("-") &&
+      !(s.charAt(1).isDigit || s.charAt(1) == '.') // -1 / -.5 are values
 
   // ------------------------------------------------------------------ help
 
@@ -105,11 +132,14 @@ object Cli:
                |Commands:
                |  add <path>...      record visits      (--no-verify: skip existence check)
                |  query [<query>]    print best match   (-l list, -s list+scores, -a all,
-               |                                        --json, --max-results=N,
-               |                                        --exclude=PATH[,PATH])
+               |                                        --json, --regex=PATTERN, --print0,
+               |                                        --max-results=N, --exclude=P1,P2)
                |  query -i | --interactive   interactive picker: fuzzy search, regex (ctrl-r),
                |                    or select by id (type a number)
                |  list               list remembered dirs, best first
+               |  recent [N]         most recently visited dirs (true recency; --all, --json)
+               |  complete [<word>]  tab-completion candidates (--cwd=DIR, --limit=N,
+               |                     --all, --json) - used by the shell integrations
                |  remove <path>...   forget paths
                |  move <old> <new>   re-point a remembered dir (histories merge)
                |  alias [<n> <tgt>]  named shortcuts: `zam alias work C:\\src\\job`,
@@ -124,7 +154,7 @@ object Cli:
                |  shell [<name>]     print shell integration: powershell (default), bash,
                |                     zsh, fish
                |  import <file>      add dirs from a shell history / log file (--verify:
-               |                     only record paths that still exist)
+               |                     only record paths that still exist; '-' reads stdin)
                |  export [<file>]    write remembered paths, one per line (relative paths
                |                     land in the current directory)
                |  demo               side-by-side: zam scoring vs zoxide scoring
@@ -156,10 +186,16 @@ object Cli:
       Store.save(dir, nd)
       val skipped =
         if noVerify then Vector.empty
-        else paths.filterNot(raw => Files.isDirectory(Paths.get(raw)))
+        else paths.filterNot(raw => isDirectory(raw))
       skipped.foreach(raw => errln(s"zam: not a directory, skipped: $raw"))
       // non-zero when anything was rejected, so scripts can tell
       if skipped.nonEmpty then 1 else 0
+
+  /** Existence check that expands `~` and tolerates junk input, so the
+    * verification path agrees with what `Store.add` actually records. */
+  private def isDirectory(raw: String): Boolean =
+    try Files.isDirectory(Paths.get(Store.canonicalize(raw)))
+    catch case _: Exception => false
 
   // ---------------------------------------------------------------- query
 
@@ -169,6 +205,7 @@ object Cli:
     val withScore = flag(p, "s") || flag(p, "score")
     val interactive = flag(p, "i") || flag(p, "interactive")
     val asJson = flag(p, "json")
+    val print0 = flag(p, "0") || flag(p, "print0")
     val listOnly = flag(p, "l") || flag(p, "list") || (withScore && !interactive) // -s means "list with scores"
     val maxResults =
       p.flags.get("max-results") match
@@ -181,26 +218,58 @@ object Cli:
               return 2
     val excludes = p.flags.get("exclude").toVector.flatMap(_.split(',')).map(_.trim).filter(_.nonEmpty)
     val terms = p.positionals.mkString(" ").trim
+    val regex = p.flags.get("regex").map(_.trim).filter(_.nonEmpty)
+
+    if p.flags.contains("regex") && regex.isEmpty then
+      errln("zam: --regex requires a pattern, e.g. --regex='^C:\\\\src'")
+      return 2
+
+    def emit(s: String): Unit =
+      if print0 then
+        Console.out.print(s)
+        Console.out.print('\u0000')
+      else Console.out.println(s)
 
     if terms == "-" then
       sys.env.get("OLDPWD") match
         case Some(prev) if Files.isDirectory(Paths.get(prev)) =>
-          println(prev)
+          emit(prev)
           0
         case _ =>
           errln("zam: no previous directory")
           1
     else
+      // compile the optional regex once; a bad pattern is a usage error
+      val regexOk: String => Boolean =
+        regex match
+          case None => _ => true
+          case Some(rx) =>
+            try
+              val compiled = java.util.regex.Pattern.compile(
+                rx,
+                java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CASE
+              )
+              path => compiled.matcher(path).find()
+            catch
+              case e: java.util.regex.PatternSyntaxException =>
+                errln(s"zam: invalid regex '$rx': ${e.getDescription}")
+                return 2
+
+      val fuzzyOk: String => Boolean =
+        if terms.isEmpty || regex.nonEmpty && p.positionals.isEmpty then _ => true
+        else path => Matcher.matches(path, terms)
+
       val database = db(dir)
       val now = nowEpoch
 
       // an exact alias name beats fuzzy matching: `zam work` goes where
-      // `zam alias work ...` pointed it
-      if terms.nonEmpty then
+      // `zam alias work ...` pointed it. Listing/picker/json modes keep
+      // their normal semantics.
+      if terms.nonEmpty && regex.isEmpty && !listOnly && !interactive && !asJson then
         database.findAlias(terms) match
           case Some(path) =>
             if Files.isDirectory(Paths.get(path)) || all then
-              println(path)
+              emit(path)
               return 0
             else
               errln(s"zam: alias '$terms' points to a directory that no longer exists: $path")
@@ -210,8 +279,9 @@ object Cli:
 
       val candidates = database.entries.filter { e =>
         (all || Files.isDirectory(Paths.get(e.path))) &&
-        !excludes.exists(x => Store.same(e.path, Store.canonicalize(x))) &&
-        (terms.isEmpty || Matcher.matches(e.path, terms))
+        !isExcluded(e.path, excludes) &&
+        fuzzyOk(e.path) &&
+        regexOk(e.path)
       }
       val ranked = candidates
         .map(e => (e, Score.frecency(e, now, database.config)))
@@ -231,7 +301,7 @@ object Cli:
       else if interactive then
         Picker.run(limited.map { case (e, s) => Picker.Item(e.path, s) }) match
           case Picker.Result.Chosen(path) =>
-            println(path)
+            emit(path)
             0
           case Picker.Result.Cancelled =>
             if limited.isEmpty then errln("zam: no match")
@@ -246,11 +316,11 @@ object Cli:
               1
             else
               limited.foreach { (e, s) => errln(f"${s}%.3f\t${e.path}") }
-              println(limited.head._1.path)
+              emit(limited.head._1.path)
               0
       else if listOnly then
         limited.foreach { (e, s) =>
-          if withScore then println(f"${s}%.3f\t${e.path}") else println(e.path)
+          if withScore then emit(f"${s}%.3f\t${e.path}") else emit(e.path)
         }
         if limited.isEmpty then
           errln("zam: no match")
@@ -259,14 +329,97 @@ object Cli:
       else
         limited.headOption match
           case Some((e, _)) =>
-            println(e.path)
+            emit(e.path)
             0
           case None =>
             errln(s"zam: no match${if terms.nonEmpty then s" for '$terms'" else ""}")
             1
 
+  /** `--exclude` accepts absolute paths (that path and everything under it)
+    * and plain names (a path component with that exact name). */
+  private def isExcluded(path: String, excludes: Vector[String]): Boolean =
+    val pKey = Store.key(path)
+    excludes.exists { raw =>
+      val x = raw.trim
+      if x.isEmpty then false
+      else if Store.isAbsolute(x) then
+        try
+          val xKey = Store.key(Store.canonicalize(x))
+          pKey == xKey || pKey.startsWith(xKey + "/") || pKey.startsWith(xKey + "\\")
+        catch case _: Exception => false
+      else
+        val xk = Store.key(x)
+        pKey.split(raw"[\\/]").exists(_ == xk)
+    }
+
   private def cmdList(dir: Path, args: Vector[String]): Int =
     cmdQuery(dir, args ++ Vector("--list", "--all"))
+
+  // --------------------------------------------------------------- recent
+
+  /** Directories ordered by *when you were last there* (true recency), not by
+    * frecency — handy when you want "what I was just working on". */
+  private def cmdRecent(dir: Path, args: Vector[String]): Int =
+    val p = divide(args)
+    val all = flag(p, "a") || flag(p, "all")
+    val asJson = flag(p, "json")
+    val n = p.positionals.headOption.flatMap(_.toIntOption).filter(_ > 0).getOrElse(20)
+    val database = db(dir)
+    val now = nowEpoch
+    val rows = database.entries.zipWithIndex
+      .filter { case (e, _) => (all || Files.isDirectory(Paths.get(e.path))) && e.lastVisit.isDefined }
+      // ties (same epoch second) fall back to insertion order, newest first
+      .sortBy { case (e, i) => (-e.lastVisit.getOrElse(0L), -i) }
+      .take(n)
+      .map { case (e, _) => (e, Score.frecency(e, now, database.config)) }
+    if asJson then
+      println(Json.render(Value.arr(rows.map { case (e, s) =>
+        val last = e.lastVisit.getOrElse(0L)
+        Value.obj(
+          "path" -> Value.str(e.path),
+          "last" -> Value.num(last.toDouble),
+          "age" -> Value.str(Score.humanAge((now - last).max(0L))),
+          "visits" -> Value.num(e.count.toDouble),
+          "score" -> Value.num(s)
+        )
+      }.toVector), pretty = false))
+    else rows.foreach { case (e, _) => println(e.path) }
+    if rows.isEmpty then
+      errln("zam: no remembered directories")
+      1
+    else 0
+
+  // ------------------------------------------------------------- complete
+
+  /** Tab-completion engine used by every shell snippet. Prints one insertion
+    * candidate per line, or rich JSON for shells that can show tooltips.
+    * Always exits 0: completion must never interrupt the shell. */
+  private def cmdComplete(dir: Path, args: Vector[String]): Int =
+    val p = divide(args)
+    val all = flag(p, "a") || flag(p, "all")
+    val asJson = flag(p, "json")
+    val limit = p.flags.get("limit").flatMap(_.toIntOption).filter(_ > 0).getOrElse(100)
+    val cwd = p.flags
+      .get("cwd")
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .flatMap(s => try Some(Paths.get(s).toAbsolutePath.normalize) catch case _: Exception => None)
+      .filter(Files.isDirectory(_))
+      .getOrElse(Paths.get(System.getProperty("user.dir")))
+    val word = p.positionals.mkString(" ")
+    val database = db(dir)
+    val candidates = Completion.suggest(word, cwd, database, nowEpoch, all, limit)
+    if asJson then
+      println(Json.render(Value.arr(candidates.map { c =>
+        Value.obj(
+          "value" -> Value.str(c.value),
+          "display" -> Value.str(c.display),
+          "detail" -> Value.str(c.detail),
+          "source" -> Value.str(c.source)
+        )
+      }.toVector), pretty = false))
+    else candidates.foreach(c => println(c.value))
+    0
 
   private def rankLess(a: (Model.Entry, Double), b: (Model.Entry, Double)): Boolean =
     val (ea, sa) = a
@@ -456,31 +609,37 @@ object Cli:
     val verify = flag(p, "verify")
     p.positionals.headOption match
       case None =>
-        errln("zam: 'import' requires a file path")
+        errln("zam: 'import' requires a file path (use '-' to read stdin)")
         2
       case Some(file) =>
-        val f = Paths.get(file)
-        if !Files.isRegularFile(f) then
-          errln(s"zam: no such file: $file")
-          2
-        else
-          val lines = Files.readAllLines(f, java.nio.charset.StandardCharsets.UTF_8)
-          val paths = ListBuffer.empty[String]
-          var skipped = 0
-          lines.forEach { raw =>
-            // strict parsing: only bare absolute paths and cd-family / zoxide
-            // commands yield candidates; everything else is skipped so a
-            // whole shell history cannot pollute the database
-            Store.parseHistoryLine(raw) match
-              case Some(path) => paths += path
-              case None       => if raw.trim.nonEmpty && !raw.trim.startsWith("#") then skipped += 1
-          }
-          val database = db(dir)
-          val (nd, added) = Store.add(database, paths.toSeq, verify = verify, nowEpoch)
-          Store.save(dir, nd)
-          errln(s"zam: imported $added path(s) from $file" +
-            (if skipped > 0 then s" (skipped $skipped line(s): not absolute directory paths)" else ""))
-          0
+        val linesOpt: Option[Vector[String]] =
+          if file == "-" then Some(scala.io.Source.stdin.getLines().toVector)
+          else
+            val f = Paths.get(file)
+            if !Files.isRegularFile(f) then
+              errln(s"zam: no such file: $file")
+              None
+            else Some(Files.readAllLines(f, java.nio.charset.StandardCharsets.UTF_8).asScala.toVector)
+        linesOpt match
+          case None => 2
+          case Some(lines) =>
+            val paths = ListBuffer.empty[String]
+            var skipped = 0
+            lines.foreach { raw =>
+              // strict parsing: only bare absolute paths and cd-family / zoxide
+              // commands yield candidates; everything else is skipped so a
+              // whole shell history cannot pollute the database
+              Store.parseHistoryLine(raw) match
+                case Some(path) => paths += path
+                case None       => if raw.trim.nonEmpty && !raw.trim.startsWith("#") then skipped += 1
+            }
+            val database = db(dir)
+            val (nd, added) = Store.add(database, paths.toSeq, verify = verify, nowEpoch)
+            Store.save(dir, nd)
+            val from = if file == "-" then "stdin" else file
+            errln(s"zam: imported $added path(s) from $from" +
+              (if skipped > 0 then s" (skipped $skipped line(s): not absolute directory paths)" else ""))
+            0
 
   private def cmdExport(dir: Path, args: Vector[String]): Int =
     val p = divide(args)

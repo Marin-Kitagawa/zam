@@ -28,6 +28,8 @@ object TestMain:
     scoreTests()
     storeTests()
     importParserTests()
+    completionTests()
+    shellTests()
     cliTests()
     pickerTests()
     println("")
@@ -255,6 +257,84 @@ object TestMain:
     eq("hist: popd alone skipped", Store.parseHistoryLine("popd"), None)
     eq("hist: export skipped", Store.parseHistoryLine("export PATH=/usr/bin:$PATH"), None)
 
+  // ------------------------------------------------------------- completion
+
+  def completionTests(): Unit =
+    val root = Files.createTempDirectory("zam-complete")
+    try
+      val cwd = Files.createDirectories(root.resolve("work"))
+      Files.createDirectories(cwd.resolve("project-alpha"))
+      Files.createDirectories(cwd.resolve("project-beta"))
+      Files.createDirectories(cwd.resolve("notes"))
+      val elsewhere = Files.createDirectories(root.resolve("project-elsewhere"))
+      val now = System.currentTimeMillis() / 1000L
+      val db = Model
+        .Db(
+          Model.Config.Default,
+          Vector(
+            Model.Entry(elsewhere.toString, Vector(now)),
+            Model.Entry(root.resolve("gone-project").toString, Vector(now)),
+            Model.Entry(cwd.toString, Vector(now))
+          )
+        )
+        .withAlias("proj", cwd.resolve("project-alpha").toString)
+
+      val simple = Completion.suggest("project", cwd, db, now)
+      eq("complete: local dirs first", simple.take(2).map(_.value), Vector("project-alpha", "project-beta"))
+      eq("complete: local candidates are marked 'here'", simple.head.source, "here")
+      eq("complete: exact local match first", Completion.suggest("notes", cwd, db, now).head.value, "notes")
+      check("complete: history fallback still offered")(
+        Completion.suggest("elsewhere", cwd, db, now).exists(c => c.value == elsewhere.toString)
+      )
+      check("complete: missing dirs hidden")(
+        !Completion.suggest("gone", cwd, db, now).exists(_.value.contains("gone-project"))
+      )
+      check("complete: missing dirs shown with --all")(
+        Completion.suggest("gone", cwd, db, now, includeMissing = true).exists(_.value.contains("gone-project"))
+      )
+      eq("complete: alias exact first", Completion.suggest("proj", cwd, db, now).head.value, "proj")
+      check("complete: flags")(
+        Completion.suggest("-i", cwd, db, now).exists(c => c.value == "-i" && c.source == "flag")
+      )
+      val pathPart = Completion.suggest(cwd.toString + java.io.File.separator + "pro", cwd, db, now)
+      eq(
+        "complete: path-like word lists that directory",
+        pathPart.map(_.value).sorted,
+        Vector("project-alpha", "project-beta").map(n => cwd.resolve(n).toString).sorted
+      )
+      check("complete: the current directory is not suggested")(
+        !Completion.suggest("", cwd, db, now).exists(c => Store.same(c.value, cwd.toString))
+      )
+      check("complete: empty word still lists what is here")(
+        Completion.suggest("", cwd, db, now).take(3).map(_.value).toSet ==
+          Set("notes", "project-alpha", "project-beta")
+      )
+      eq("complete: no match yields nothing", Completion.suggest("zzzz", cwd, db, now), Vector.empty)
+    finally deleteTree(root)
+
+  // ----------------------------------------------------------------- shells
+
+  def shellTests(): Unit =
+    val ps = Shell.powershellSnippet
+    check("shell: PowerShell detects both completer signatures")(
+      ps.contains("__zamCompletionContext") && ps.contains("CommandAst")
+    )
+    check("shell: completer no longer assumes the cmdlet parameter order")(
+      !ps.contains("param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)")
+    )
+    check("shell: completion passes the session location explicitly")(
+      ps.contains("--cwd $here")
+    )
+    check("shell: z and zam completers are registered")(
+      ps.contains("Register-ArgumentCompleter -CommandName z") &&
+        ps.contains("Register-ArgumentCompleter -CommandName zam")
+    )
+    check("shell: every POSIX snippet uses the completion engine")(
+      Shell.bashSnippet.contains("__zam complete") &&
+        Shell.zshSnippet.contains("__zam complete") &&
+        Shell.fishSnippet.contains("__zam complete")
+    )
+
   // ------------------------------------------------------------------- cli
 
   private def runCli(args: String*): (Int, String) =
@@ -347,6 +427,52 @@ object TestMain:
       // invalid --max-results is an error, not a silent ignore
       val (cmm, _) = runCli("--data-dir", dataDir.toString, "query", "--max-results=abc")
       eq("cli: bad --max-results exits 2", cmm, 2)
+
+      // value-taking flags accept the space-separated form too
+      eq("divide: --regex value", Cli.divide(Seq("--regex", "foo", "-l")).flags,
+        Map("regex" -> "foo", "l" -> ""))
+      eq("divide: --max-results value", Cli.divide(Seq("--max-results", "5")).flags.get("max-results"), Some("5"))
+
+      // regex search (case-insensitive; matches the full path)
+      val (crx, orx) = runCli("--data-dir", dataDir.toString, "query", "-l", "--regex", "ZAM-D1")
+      check("cli: --regex matches case-insensitively")(crx == 0 && orx.linesIterator.exists(l => Store.same(l, d1)))
+      val (crx0, _) = runCli("--data-dir", dataDir.toString, "query", "-l", "--regex", "[")
+      eq("cli: invalid regex exits 2", crx0, 2)
+
+      // --exclude matches a path component, not just a full path
+      val d1Name = Paths.get(d1).getFileName.toString
+      val (cexc, oexc) = runCli("--data-dir", dataDir.toString, "query", "-l", s"--exclude=$d1Name")
+      eq("cli: --exclude by component leaves one", oexc.linesIterator.length, 1)
+      check("cli: --exclude by component drops d1")(!oexc.linesIterator.exists(l => Store.same(l, d1)))
+
+      // recent: true recency (d2 was recorded after d1)
+      val (crec, orec) = runCli("--data-dir", dataDir.toString, "recent")
+      eq("cli: recent exits 0", crec, 0)
+      eq("cli: recent most recent first", orec.linesIterator.next(), d2)
+      val (crecj, orecj) = runCli("--data-dir", dataDir.toString, "recent", "1", "--json")
+      check("cli: recent --json")(crecj == 0 && Json.parse(orecj).arr.length == 1)
+
+      // add expands ~ before verifying (it used to report a false failure)
+      val (ctilde, _) = runCli("--data-dir", dataDir.toString, "add", "~")
+      eq("cli: add ~ expands home", ctilde, 0)
+
+      // complete: filesystem first, JSON for rich shell menus
+      val cdir = Files.createTempDirectory("zam-complete-cli")
+      try
+        Files.createDirectories(cdir.resolve("alpha"))
+        Files.createDirectories(cdir.resolve("beta"))
+        val (cc, oc) = runCli("--data-dir", dataDir.toString, "complete",
+          "--cwd", cdir.toString, "--json", "--", "al")
+        val arr = Json.parse(oc).arr
+        eq("cli: complete --json finds the local child",
+          arr.headOption.flatMap(_.obj.toMap.get("value")).map(_.str), Some("alpha"))
+        val (cc2, oc2) = runCli("--data-dir", dataDir.toString, "complete",
+          "--cwd", cdir.toString, "--", "")
+        eq("cli: complete lists both children first", oc2.linesIterator.take(2).toSet, Set("alpha", "beta"))
+        val (cc3, oc3) = runCli("--data-dir", dataDir.toString, "complete",
+          "--cwd", cdir.toString, "--", "-")
+        check("cli: complete offers flags for a dash")(cc3 == 0 && oc3.linesIterator.contains("-i"))
+      finally deleteTree(cdir)
 
       // aliases: set, resolve, beats fuzzy matching, delete
       val (ca, _) = runCli("--data-dir", dataDir.toString, "alias", "wkh", d1)

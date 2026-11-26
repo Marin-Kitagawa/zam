@@ -1,0 +1,157 @@
+name: Release
+
+# Pushing a tag like v0.3.1 builds, tests, and publishes a GitHub Release with
+# the runnable assembly jar. Run it manually (workflow_dispatch) to re-publish
+# an existing tag.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (for example v0.3.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version from tag
+        id: version
+        shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="$DISPATCH_TAG"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          case "$tag" in
+            v[0-9]*) version="${tag#v}" ;;
+            *)
+              echo "::error::tag '$tag' must look like v1.2.3"
+              exit 1
+              ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Must be set before the first sbt invocation: the sbt server loads
+          # build.sbt once, so a later export would not change the version.
+          echo "ZAM_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Publishing $tag (version $version)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: sbt
+
+      - name: Set up sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Test and build
+        # one sbt invocation: the server must see ZAM_VERSION from the start
+        run: sbt -batch "Test/runMain zam.TestMain" assembly
+
+      - name: Verify the artifact
+        id: artifact
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          jar="zam-assembly-${VERSION}.jar"
+          built="$(find target/out -type f -name "$jar" | head -n1)"
+          if [ -z "$built" ]; then
+            echo "::error::no $jar under target/out - did ZAM_VERSION reach sbt?"
+            exit 1
+          fi
+          cp "$built" "$jar"
+          reported="$(java -jar "$jar" version)"
+          echo "jar reports: $reported"
+          if [ "$reported" != "zam ${VERSION}" ]; then
+            echo "::error::version drift: tag is ${VERSION}, jar reports '${reported}'"
+            exit 1
+          fi
+          sha256sum "$jar" > SHA256SUMS.txt
+          echo "jar=$jar" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(cut -d' ' -f1 SHA256SUMS.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes from CHANGELOG
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, re
+
+          version = os.environ["VERSION"]
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          pattern = re.compile(
+              rf"^##\s+{re.escape(version)}\b[^\n]*\n(.*?)(?=^##\s|\Z)",
+              re.MULTILINE | re.DOTALL,
+          )
+          match = pattern.search(text)
+          if match and match.group(1).strip():
+              body = match.group(1).strip() + "\n"
+          else:
+              print(f"::warning::CHANGELOG.md has no section for {version}")
+              body = f"See [CHANGELOG.md](CHANGELOG.md) for the changes in {version}.\n"
+          pathlib.Path("release-notes.md").write_text(body, encoding="utf-8")
+          print(body)
+          PY
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          JAR: ${{ steps.artifact.outputs.jar }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$JAR" SHA256SUMS.txt --clobber
+            gh release edit "$TAG" --title "zam $VERSION" --notes-file release-notes.md
+          else
+            prerelease=""
+            case "$VERSION" in
+              *-*) prerelease="--prerelease" ;;
+            esac
+            gh release create "$TAG" "$JAR" SHA256SUMS.txt \
+              --title "zam $VERSION" \
+              --notes-file release-notes.md \
+              --target "$GITHUB_SHA" \
+              $prerelease
+          fi
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### zam ${{ steps.version.outputs.version }}"
+            echo ""
+            echo "- artifact: \`${{ steps.artifact.outputs.jar }}\`"
+            echo "- sha256: \`${{ steps.artifact.outputs.sha256 }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

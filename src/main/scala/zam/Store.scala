@@ -220,13 +220,14 @@ object Store:
       case Some(w) => line.drop(w.length).trim
       case None    => line
     // a quoted argument may contain spaces — take the quoted span as-is
-    for q <- Seq('"', '\'') do
-      if candidate.startsWith(q.toString) then
+    candidate.headOption match
+      case Some(q) if q == '"' || q == '\'' =>
         val close = candidate.indexOf(q, 1)
         if close > 1 then
           val inner = candidate.substring(1, close)
           return if isAbsolute(inner) then Some(inner) else None
         return None // unterminated quote
+      case _ => ()
     // drop flags like - or --physical; an argument of "-" means "previous dir"
     val toks = candidate.split("\\s+").toVector.dropWhile(_.startsWith("-"))
     if toks.isEmpty then return None

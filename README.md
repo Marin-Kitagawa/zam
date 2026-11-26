@@ -91,7 +91,7 @@ coursier.
    The jar lands at:
 
    ```text
-   target/out/jvm/scala-3.9.0/zam/zam-assembly-0.2.0.jar
+   target/out/jvm/scala-3.9.0/zam/zam-assembly-0.3.0.jar
    ```
 
 2. Put a launcher next to the jar and add that directory to your `PATH`. The
@@ -103,7 +103,7 @@ coursier.
 
    ```sh
    #!/bin/sh
-   exec java --enable-native-access=ALL-UNNAMED -jar "$(dirname "$0")/zam-assembly-0.2.0.jar" "$@"
+   exec java --enable-native-access=ALL-UNNAMED -jar "$(dirname "$0")/zam-assembly-0.3.0.jar" "$@"
    ```
 
    `--enable-native-access` (Java 21+) keeps the interactive picker's console
@@ -142,8 +142,11 @@ Bare invocations follow zoxide semantics:
 
 ```text
 zam add <path>...      record visits        [--no-verify]
-zam query <query>      print best match     [-l | -s | -a | -i | --json], [--max-results=N], [--exclude=P1,P2]
+zam query <query>      print best match     [-l | -s | -a | -i | --json], [--regex=PATTERN],
+                                             [--print0], [--max-results=N], [--exclude=P1,P2]
 zam list               remembered dirs, best first
+zam recent [N]         most recently visited dirs (true recency)
+zam complete [word]    tab-completion candidates (filesystem + history)
 zam remove <path>...   forget paths
 zam move <old> <new>   re-point a remembered dir (histories merge)
 zam alias [<n> <tgt>]  named shortcuts; `zam alias` lists, `zam alias n` resolves, `alias -d n` drops
@@ -187,12 +190,16 @@ zam query -s               # like -l, but with scores (implies listing)
 zam query -a               # include directories that no longer exist
 zam query -i               # interactive picker (built-in TUI) — or --interactive
 zam query --json           # machine-readable: [{"path","score","visits","last"}, ...]
+zam query --regex='^C:\\src'  # case-insensitive regex on the full path
+zam query -l --print0      # NUL-separated output, safe for xargs -0
 zam query --max-results=5  # cap the result set
-zam query --exclude=a,b    # skip paths containing these components
+zam query --exclude=a,b    # skip a path component, or an absolute path subtree
 ```
 
 Exit status is 0 on a match, 1 otherwise. The PowerShell `z` function relies
 on this to decide whether to `cd`.
+
+`--regex` and `--exclude` accept either `--flag=value` or `--flag value`.
 
 #### Interactive picker (`-i`)
 
@@ -229,6 +236,37 @@ highlights, peach scores, and a little pink block cursor:
 
 Shorthand for `zam query --list --all` — all remembered directories, best
 first, whether or not they still exist.
+
+### recent
+
+Directories ordered by **when you were last there**, not by frecency — the
+"what was I just working on" view. Gone directories are hidden unless
+`--all`; `--json` adds the age, visit count and current score.
+
+```console
+zam recent            # 20 most recently visited dirs
+zam recent 5          # just the five most recent
+zam recent --json     # [{"path","last","age","visits","score"}, ...]
+```
+
+### complete
+
+The completion engine behind the shell snippets. `zam complete <word>`
+prints one insertion candidate per line, best first. It is **filesystem
+first**: children of the current directory come before remembered paths, so
+a stale entry can never crowd out the directory that is right in front of
+you. Only existing directories are offered unless `--all` is passed.
+
+```console
+zam complete do                    # documents/ here first, then history
+zam complete 'C:\Us'               # path-component completion
+zam complete --cwd 'C:\src' -- -i  # flag completion for `z`
+zam complete --json -- ''          # rich list (tooltips) for shells
+```
+
+Candidates carry a `source`: `here` (a real child directory), `history`
+(a remembered path), `alias`, or `flag`. The PowerShell integration uses the
+JSON form to show visit counts and scores as tooltips.
 
 ### remove
 
@@ -337,6 +375,8 @@ or a `ZAM_JAR` environment variable.
   with an absolute argument. Anything else — `git commit`, `ls -la`,
   relative paths — is skipped and counted, never invented into a fake
   directory. `--verify` additionally records only paths that still exist.
+  `zam import -` reads the history from stdin, so
+  `zoxide query -l | zam import -` works without a temp file.
 - `zam export [<file>]` — write remembered paths (best first). A relative
   file name lands in the **current directory**; with no argument the
   default `zam-export.txt` goes to the data directory.
@@ -472,7 +512,8 @@ your profile is untouched.
   commands), not to the batch launcher:
 
   - `z` — `cd` to your home directory (`~`)
-  - `z -l` (or `z --list`) — list remembered directories
+  - `z -l` (or `z --list`) — list remembered directories; `z -s` lists with scores
+  - `z -i` — interactive picker (fuzzy / regex / id)
   - `z -` — return to the previous directory
   - `z <existing dir>` — `cd` straight into it (and it is recorded by the
     per-prompt hook)
@@ -481,7 +522,15 @@ your profile is untouched.
 - A per-prompt hook (`__zamHook`, chained through the `Prompt` function) that
   records every directory change. It cooperates cleanly with posh-git; if you
   use another prompt framework, call `__zamHook` from your own `Prompt`.
-- `Tab` completion for `z` arguments, backed by the database.
+- `Tab` completion for `z` arguments and `zam` subcommands, backed by
+  `zam complete`. The menu is **filesystem first**: children of the current
+  directory appear above remembered paths, directories that no longer exist
+  are left out, and history rows show visits / age / score as a tooltip.
+  `Tab` passes the session location explicitly (`--cwd`), because
+  PowerShell's process working directory is not its current location. The
+  snippet detects both argument-completer signatures — the 5-parameter form
+  used by Windows PowerShell 5.1 and the 3-parameter native form that
+  PowerShell 6+ uses when `-ParameterName` is absent — so Tab works on both.
 
 ### Why the hook needs a function and not just the batch file
 
@@ -525,7 +574,7 @@ Build and test:
 
 ```console
 sbt compile                      # compile
-sbt "Test/runMain zam.TestMain"  # dependency-free test runner (142 checks)
+sbt "Test/runMain zam.TestMain"  # dependency-free test runner (172 checks)
 ```
 
 Source layout (`.scala` files under `src/main/scala/zam/`):
@@ -534,6 +583,7 @@ Source layout (`.scala` files under `src/main/scala/zam/`):
 |-----------------|------------------|------------------------------------------------------------------------|
 | `Model` / `Score` | `Model.scala` | Entry/DB types, power-law frecency, zoxide-model comparison, human ages. |
 | `Matcher`       | `Matcher.scala` | zoxide-faithful fuzzy matching (case-fold, ordered terms, last-component). |
+| `Completion`    | `Completion.scala` | Tab-completion ranking: local directories, aliases, history, flags. |
 | `Store`         | `Store.scala`   | JSON persistence, file locking, atomic writes, cap/prune/remove logic.  |
 | `Cli`           | `Cli.scala`     | Argument parsing and all subcommands, including the bare-invocation logic. |
 | `Picker`        | `Picker.scala`  | Built-in interactive picker: fuzzy / regex / id modes, scrolling TUI.   |
@@ -545,12 +595,38 @@ Source layout (`.scala` files under `src/main/scala/zam/`):
 The scoring code has no external dependencies — it is pure Scala — so it
 transports unchanged to Scala Native or GraalVM for a native binary.
 
+## Releasing
+
+Releases are built and published by
+[`.github/workflows/release.yml`](.github/workflows/release.yml):
+
+1. Add a `## <version>` section to `CHANGELOG.md` and bump the fallback
+   version in `build.sbt` (only needed for local builds).
+2. Commit, then tag and push:
+
+   ```console
+   git tag v0.3.1
+   git push origin v0.3.1
+   ```
+
+The workflow derives the version from the tag (`v0.3.1` → `0.3.1`), exports it
+as `ZAM_VERSION`, runs the test suite, builds the assembly jar, and verifies
+that `java -jar … version` reports the tag — so the binary and the tag can
+never drift. It uploads the jar plus `SHA256SUMS.txt` to a GitHub Release and
+uses the matching `CHANGELOG.md` section as the release notes.
+
+Nothing else is needed: `sbt assembly` locally still produces
+`zam-assembly-0.3.0.jar` (or whatever `ZAM_VERSION` is set to), and the same
+tag-driven flow can be re-run from **Actions → Release → Run workflow**.
+
 ## Command quick reference
 
 ```console
 zam add        <path>...       record visits            (--no-verify)
-zam query      [query]         print best match         (-l -s -a -i --json --max-results=N --exclude=P1,P2)
+zam query      [query]         print best match         (-l -s -a -i --json --regex=PATTERN --print0)
 zam list                       list remembered dirs
+zam recent     [N]             most recently visited dirs        (--all, --json)
+zam complete   [word]          tab-completion candidates         (--cwd=DIR, --limit=N, --all, --json)
 zam remove     <path>...       forget paths
 zam move       <old> <new>     re-point a moved directory
 zam alias      [n] [target]    named shortcuts          (alias -d <name> drops one)
@@ -561,7 +637,7 @@ zam doctor                     check the database for problems
 zam config     [k=v ...]       alpha / tau / max_visits  (config reset)
 zam shell      [powershell|bash|zsh|fish]
                                print shell integration
-zam import     <file>          add dirs from a history/log file   (--verify)
+zam import     <file|->        add dirs from a history/log file   (--verify)
 zam export     [<file>]        write remembered paths
 zam demo                       comparison vs zoxide
 zam version                    print version

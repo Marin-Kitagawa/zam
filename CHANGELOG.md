@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.3.0 — 2026-11-26
+
+### Fixed
+
+- **PowerShell Tab completion searched for the cursor column, not what you
+  typed.** `Register-ArgumentCompleter -CommandName` without `-ParameterName`
+  is treated as a *native* completer, so the script block receives
+  `($wordToComplete, $commandAst, $cursorPosition)`. The old snippet declared
+  the 5-parameter cmdlet form, which made `$wordToComplete` the cursor
+  position — pressing Tab after `z d` ran `zam query --list 4` and returned
+  arbitrary entries whose names happened to contain "4". The snippet now
+  detects the argument shape, so it works in both PowerShell 7.6+ and
+  Windows PowerShell 5.1.
+- **Tab completion offered old, even dead, directories instead of what is
+  actually in the current directory.** `zam query --list <word>` forces
+  `--all`, so the menu was the entire history — dead paths included — ranked
+  by frecency and filtered by zoxide's *last-component* fuzzy rule. Nothing in
+  the current working directory was ever considered. Completion is now its own
+  engine (`zam complete`, `Completion.scala`) that returns, in order: children
+  of the current directory, aliases, then remembered paths. Missing
+  directories are excluded, the current directory is never suggested as
+  history, and history rows carry visits / age / score as a tooltip.
+- **PowerShell completion quoted nothing and used the wrong working
+  directory.** Paths with spaces broke the inserted token, and the completer
+  read the JVM's process cwd (PowerShell's `Set-Location` does not change it).
+  The snippet now passes `--cwd (Get-Location).ProviderPath`, wraps values
+  containing whitespace in single quotes, and returns real
+  `CompletionResult` objects. It also completes `zam` subcommands and `z`
+  flags, and falls back to `java -jar $env:ZAM_JAR` when no launcher is on
+  `PATH`.
+- **`zam add ~` reported a false failure** (exit 1, "not a directory"): the
+  verification path did not expand `~` even though the recorded path did.
+- **`--exclude` only matched whole paths**, contradicting the documented
+  "skip paths containing these components". A plain name now matches any path
+  component and an absolute path excludes its whole subtree.
+- **An exact alias hijacked listing modes**: `zam query -l work`,
+  `query --json work` and `query -i work` returned the alias instead of
+  listing. The alias shortcut now applies only to plain "print the best
+  match" queries.
+- Non-local `return`s in `Store.parseHistoryLine` (a Scala 3.9 error class)
+  were replaced with ordinary control flow.
+
+### Added
+
+- **Automated releases** — `.github/workflows/release.yml` runs the test
+  suite and builds the assembly jar on a `v*` tag, verifies that
+  `java -jar … version` reports the tag, attaches the jar plus
+  `SHA256SUMS.txt` to a GitHub Release, and uses the matching `CHANGELOG.md`
+  section as release notes. The build version comes from `ZAM_VERSION` (set
+  from the tag) with `0.3.0` as the local default, and `zam version` reads the
+  packaged manifest, so the tag and the binary cannot drift.
+- **`zam complete [<word>]`** — the completion engine behind every shell
+  snippet. Filesystem-first, filesystem-aware for path-like words
+  (`z C:\Us<TAB>`, `z ../pro<TAB>`), flag completion (`z -<TAB>`), `--cwd`,
+  `--limit`, `--all`, and `--json` for rich menus.
+- **`zam recent [N]`** — directories ordered by when you were last there,
+  not by frecency; `--all` includes gone paths, `--json` adds age/visits/score.
+- **`query --regex=PATTERN`** — case-insensitive regex search over the full
+  path (the picker's `Ctrl-R` mode, now available from the CLI). Invalid
+  patterns exit 2.
+- **`query --print0`** — NUL-separated output for `xargs -0` and friends.
+- **`zam import -`** — read history from stdin
+  (`zoxide query -l | zam import -`).
+- **Value flags accept the space-separated form** — `--regex foo`,
+  `--exclude a,b`, `--max-results 5`, `--cwd DIR`, `--limit N`, `--max-age N`.
+- Bash, zsh and fish completion now go through `zam complete` (local
+  directories first, dead entries omitted, spaces quoted by the shell) and
+  complete `zam` subcommands.
+- Shell `z` helpers gained `z -s` (list with scores) and `z -i` (picker) in
+  bash, zsh and fish.
+
 ## 0.2.0 — 2026-10-02
 
 ### Fixed
