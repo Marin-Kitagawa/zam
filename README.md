@@ -1,5 +1,8 @@
 # zam
 
+[![CI](https://github.com/Marin-Kitagawa/zam/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Marin-Kitagawa/zam/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Marin-Kitagawa/zam)](https://github.com/Marin-Kitagawa/zam/releases/latest)
+
 A smarter `cd`, written in Scala 3 — a drop-in alternative to
 [zoxide](https://github.com/ajeetdsouza/zoxide) with one important upgrade: it
 keeps your **full visit history** and scores it, instead of collapsing each
@@ -77,8 +80,49 @@ Other differences from zoxide:
 
 ## Installation
 
-Requirements: JDK 17+ and an sbt launcher, or any JDK plus sbt installed via
-coursier.
+Requirements: JDK 17+. Building from source additionally needs sbt (the
+repository pins sbt 2.0.9 in `project/build.properties`; the sbt launcher
+fetches it).
+
+### From a release (recommended)
+
+Download `zam-assembly-<version>.jar` from the
+[latest release](https://github.com/Marin-Kitagawa/zam/releases/latest), put it
+in a directory on your `PATH`, and add a launcher next to it. The jar bundles
+everything it needs (including the JNA bridge used by the interactive
+picker), so there is no extra install step.
+
+Windows — `zam.cmd`:
+
+```bat
+@echo off
+java --enable-native-access=ALL-UNNAMED -jar "%~dp0zam-assembly-<version>.jar" %*
+```
+
+Unix — `zam` (then `chmod +x zam`):
+
+```sh
+#!/bin/sh
+exec java --enable-native-access=ALL-UNNAMED -jar "$(dirname "$0")/zam-assembly-<version>.jar" "$@"
+```
+
+Replace `<version>` with the release you downloaded. If you would rather not
+create a launcher, set `ZAM_JAR` to the jar's full path — the shell
+integrations then run it directly with `java -jar`.
+
+`--enable-native-access` (Java 21+) keeps the interactive picker's console
+access warning-free; without it the picker still works but Java prints a
+warning per run.
+
+> [!TIP]
+> In PowerShell, a `.cmd` batch file runs in a child process and can never
+> change the *parent* shell's working directory. For `z <dir>` to actually
+> `cd` in PowerShell, use the [PowerShell integration](#powershell-integration)
+> below. In **cmd.exe** the situation is different — a batch file runs
+> *in-process* there, so a `z.cmd` wrapper can perform the `cd` itself (and
+> record the visit), giving you `z <query>` with no profile setup at all.
+
+### From source
 
 1. Clone or copy the repository, then build the single runnable jar. The
    interactive picker needs the JNA bridge libraries, which sbt's assembly
@@ -94,29 +138,10 @@ coursier.
    target/out/jvm/scala-3.9.0/zam/zam-assembly-<version>.jar
    ```
 
-2. Put a launcher next to the jar and add that directory to your `PATH`. The
-   launchers find the jar via a path *relative to the script*, so you can
-   move or copy the whole directory without editing anything. On Windows use
-   `z.cmd` (see [cmd.exe](#cmdexe) below — it actually `cd`s for you) and
-   `zam.cmd` as a plain forwarder for scripts. On Unix, a two-line
-   `zam` script does the same job:
-
-   ```sh
-   #!/bin/sh
-   exec java --enable-native-access=ALL-UNNAMED -jar "$(dirname "$0")/zam-assembly-<version>.jar" "$@"
-   ```
-
-   `--enable-native-access` (Java 21+) keeps the interactive picker's console
-   access warning-free; without it the picker still works but Java prints a
-   warning per run.
-
-> [!TIP]
-> In PowerShell, a `.cmd` batch file runs in a child process and can never
-> change the *parent* shell's working directory. For `z <dir>` to actually
-> `cd` in PowerShell, use the [PowerShell integration](#powershell-integration)
-> below. In **cmd.exe** the situation is different — a batch file runs
-> *in-process* there, so `z.cmd` performs the `cd` itself (and records the
-> visit), giving you `z <query>` with no profile setup at all.
+2. Add one of the launchers shown above next to the jar and put that directory
+   on your `PATH`. The launchers find the jar via a path *relative to the
+   script*, so you can move or copy the whole directory without editing
+   anything. For cmd.exe, see [cmd.exe](#cmdexe) below.
 
 Startup on the JVM (~0.3–0.6 s) is the one thing a native binary does
 better. For production, package the same code with Scala Native or GraalVM
@@ -360,11 +385,11 @@ zam config reset               # restore defaults
 
 Prints an integration snippet for your shell — `zam shell powershell` (the
 default), `zam shell bash`, `zam shell zsh`, or `zam shell fish`. Each
-snippet installs a `z` function (jump, list, previous-dir) plus a per-prompt
-hook that records every directory change. See
-[PowerShell integration](#powershell-integration) below for the Windows
-details; the bash/zsh/fish snippets resolve the launcher via `zam` on PATH
-or a `ZAM_JAR` environment variable.
+snippet installs a `z` function (jump, list, picker, previous-dir), tab
+completion for both `z` and `zam`, plus a per-prompt hook that records every
+directory change. See [PowerShell integration](#powershell-integration) below
+for the Windows details; the bash/zsh/fish snippets resolve the launcher via
+`zam` on PATH or a `ZAM_JAR` environment variable.
 
 ### import / export
 
@@ -482,10 +507,10 @@ zam shell | Set-Content -Path $PROFILE -Append
 
 Then start a new terminal (or run `. $PROFILE`).
 
-The snippet is *launcher-aware*: it discovers your wrapper as `z.cmd`,
-`zam.cmd`, or `zam`, whichever is on `PATH`. So renaming the launcher (for
-example renaming `zam.cmd` to `z.cmd`) does not break the hook — the profile
-block re-resolves the command on every fresh session.
+The snippet is *launcher-aware*: it looks for `zam.cmd`, `zam`, then `z.cmd`
+on `PATH`, and falls back to `java -jar $env:ZAM_JAR` when none is found. So
+renaming the launcher does not break the hook — the profile block re-resolves
+the command on every fresh session.
 
 ### Installing without duplicating an old block
 
@@ -495,7 +520,7 @@ in place:
 
 ```powershell
 Copy-Item $PROFILE "$PROFILE.bak"                        # safety backup
-$snip = & 'C:\Users\you\zam\bin\z.cmd' shell
+$snip = & zam shell                                      # or: & 'C:\path\to\zam.cmd' shell
 $raw  = Get-Content $PROFILE -Raw
 $raw  = [regex]::Replace($raw, '(?s)# --- zam shell integration ---.*?# --- end zam shell integration ---\r?\n?', '')
 $new  = $raw.TrimEnd() + "`r`n`r`n" + ($snip -join "`r`n") + "`r`n"
@@ -538,14 +563,15 @@ In PowerShell, a `.cmd` stub in `PATH` cannot affect the calling shell:
 `z.cmd` runs in a child `cmd.exe`, and any `cd` it performs is discarded when
 it exits. zoxide has exactly the same constraint on Windows and solves it the
 same way — a profile function. If all you want is the *output* of a query
-from a script, `z.cmd query <query>` prints the path to stdout and is
-perfectly usable without the hook.
+from a script, `zam query <query>` prints the path to stdout and is perfectly
+usable without the hook.
 
 ## cmd.exe
 
 PowerShell needs a function to `cd`, but cmd.exe runs batch files
-*in-process* — so there the launcher itself can do the jump. `z.cmd` is
-written for that:
+*in-process* — so there the launcher itself can do the jump. Add a `z.cmd`
+wrapper next to the jar for that (a plain `zam.cmd` forwarder cannot change
+the parent shell's directory). The wrapper:
 
 - `z` — `cd` to your home directory
 - `z <existing-dir>` — `cd` straight there
@@ -555,17 +581,21 @@ written for that:
 - `z -l`, `z -s`, `zam add`, `zam stats`, … — everything else is forwarded
   to the jar untouched
 
+One rule for the wrapper: **do not use `setlocal`**. A batch file runs
+in-process in cmd.exe, and `setlocal` would restore the original directory
+when the script exits, silently undoing every `cd`.
+
 In PowerShell the `z` *function* from the integration snippet shadows this
 batch file (functions win), so the two coexist without interference.
 
 ## Importing your old zoxide history
 
 A text list of paths (for example `zoxide query -l` output, or any shell
-history) can be seeded in one shot:
+history) can be seeded in one shot; `zam import -` reads from stdin:
 
 ```console
-zoxide query -l > dirs.txt     # if you still have zoxide installed
-zam import dirs.txt
+zoxide query -l | zam import -      # if you still have zoxide installed
+zam import dirs.txt                 # or from a saved file
 ```
 
 ## Development
@@ -576,6 +606,10 @@ Build and test:
 sbt compile                      # compile
 sbt "Test/runMain zam.TestMain"  # dependency-free test runner (173 checks)
 ```
+
+CI runs that suite on every push to `main` and every pull request
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)); tagged releases are
+built by [`release.yml`](.github/workflows/release.yml).
 
 Source layout (`.scala` files under `src/main/scala/zam/`):
 
@@ -605,11 +639,11 @@ Releases are built and published by
 2. Commit, then tag and push:
 
    ```console
-   git tag v0.3.1
-   git push origin v0.3.1
+   git tag v0.4.0
+   git push origin v0.4.0
    ```
 
-The workflow derives the version from the tag (`v0.3.1` → `0.3.1`), exports it
+The workflow derives the version from the tag (`v0.4.0` → `0.4.0`), exports it
 as `ZAM_VERSION`, runs the test suite, builds the assembly jar, and verifies
 that `java -jar … version` reports the tag — so the binary and the tag can
 never drift. It uploads the jar plus `SHA256SUMS.txt` to a GitHub Release and
